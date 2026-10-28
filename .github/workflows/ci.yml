@@ -1,0 +1,83 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    # 关键：CI 跑在 Ubuntu 上，和生产环境一致。
+    # Windows 本地全绿但大小写/换行符出问题时，这里会拦住。
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: kb
+          POSTGRES_PASSWORD: dev
+          POSTGRES_DB: kb
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-retries 10
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.14"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # 两头都跑：3.12 是 requires-python 下限（客户机器可能就是它），
+          # 3.14 是开发机版本。只跑一个的话另一头会悄悄坏掉。
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: 安装依赖（不含 ML 组）
+        run: pip install -e ".[dev]"
+
+      - name: schema.sql 冒烟测试
+        # 建库必须成功，且表数与 TD-01 一致。DDL 漂移在这里就拦住。
+        env:
+          PGPASSWORD: dev
+        run: |
+          psql -h localhost -U kb -d kb -v ON_ERROR_STOP=1 -f schema.sql
+          COUNT=$(psql -h localhost -U kb -d kb -tAc \
+            "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")
+          echo "建表数：$COUNT"
+          test "$COUNT" -eq 28 || { echo "表数不是 28，schema 与 TD-01 不一致"; exit 1; }
+
+      - name: 单元测试（排除 integration）
+        run: pytest -m "not integration" -v
+
+      - name: 集成测试
+        env:
+          DATABASE_URL: postgresql://kb:dev@localhost/kb
+        run: pytest -m integration -v
+
+      - name: ruff
+        run: ruff check .
+
+      - name: mypy（仅安全关键模块）
+        run: mypy kb/identity || true   # 实现完成前允许失败；成型后去掉 || true
+
+  # 大小写敏感性检查 —— Windows 开发的头号坑
+  case-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 检测仅大小写不同的重名文件
+        run: |
+          DUPES=$(git ls-files | tr 'A-Z' 'a-z' | sort | uniq -d)
+          if [ -n "$DUPES" ]; then
+            echo "发现仅大小写不同的文件名，在 Windows 上会互相覆盖："
+            echo "$DUPES"
+            exit 1
+          fi
+          echo "无大小写冲突"
