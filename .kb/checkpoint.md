@@ -2,10 +2,11 @@
 
 | | |
 | --- | --- |
-| 保存时间 | 2026-10-28T02:38:16+00:00 |
-| HEAD | *（尚未 `git init`，解压后第一次提交时填入）* |
-| 工作区 | 全新解压，无未提交改动 |
-| 单元测试 | `1 error`：`ModuleNotFoundError: No module named 'kb.identity.permissions'` —— **这是预期的「正确的红」**，见 `SETUP.md` 步骤 4 |
+| 保存时间 | 2026-10-28T12:58:00+00:00 |
+| HEAD | `83b70df` 初始骨架：文档、schema、测试 |
+| 工作区 | 干净，无未提交改动 |
+| 单元测试 | 实跑确认：`1 error` —— `ModuleNotFoundError: No module named 'kb.identity.permissions'` —— **这是预期的「正确的红」**，与 `SETUP.md` 步骤 4 逐字一致 |
+| 环境 | venv 在 `.venv`，用 **Python 3.13.15** 建（系统 `python3` 是 3.14.4，缺 `ensurepip`，`python3 -m venv` 建不起来） |
 
 ## 1. 手头这一步
 
@@ -32,15 +33,17 @@
 ## 4. 下一步
 
 ```bash
-# 1. 初始化仓库（若尚未做）
-git init && git add -A && git commit -m "初始骨架：文档、schema、测试"
+# 1. 激活已建好的 venv（注意用 3.13，系统 python3=3.14.4 缺 ensurepip）
+source .venv/bin/activate
 
-# 2. 装环境并确认「正确的红」
-python3 -m venv .venv && source .venv/bin/activate
-make dev
+# 2. 确认「正确的红」仍然成立
 make test-unit        # 应为 1 error: kb.identity.permissions 缺失
 
-# 3. 进 opencode，把 SETUP.md 第四节那段提示原样交给它
+# 3. 实现权限模块
+#    kb/identity/permissions.py + kb/identity/registry.py
+#    验收：make test-unit → 26 passed, 3 deselected
+
+# 4. 进 opencode，把 SETUP.md 第四节那段提示原样交给它
 opencode
 ```
 
