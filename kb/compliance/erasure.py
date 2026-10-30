@@ -23,6 +23,7 @@ from typing import Literal, Protocol
 
 import asyncpg
 
+from kb.compliance.restriction import RestrictionService
 from kb.database import dsn_from_env
 from kb.indexing.deletion import CacheInvalidator
 from kb.indexing.store import DocumentStore
@@ -30,6 +31,19 @@ from kb.indexing.suppression import document_scope_key
 from kb.indexing.vector_store import VectorStore
 
 ScopeStatus = Literal["PENDING", "LOGICAL_DONE", "PHYSICAL_DONE", "FAILED", "SKIPPED"]
+
+_LOCATIONS = (
+    "raw_object",
+    "chunk",
+    "vector",
+    "cache",
+    "session",
+    "answer",
+    "audit",
+    "backup",
+    "curated_qa",
+    "eval_case",
+)
 
 _ACTIONS = {
     "raw_object": "purge",
@@ -290,6 +304,7 @@ class DocumentErasureService:
         scope_key_hasher: Callable[[str], str],
         collection: str = "kb_chunks",
         retention_days: int = 15,
+        restrictions: RestrictionService | None = None,
     ) -> None:
         self._repo = repository
         self._store = store
@@ -298,6 +313,7 @@ class DocumentErasureService:
         self._hasher = scope_key_hasher
         self._collection = collection
         self._retention_days = retention_days
+        self._restrictions = restrictions
 
     async def erase_document(
         self,
@@ -330,6 +346,30 @@ class DocumentErasureService:
             trigger_type,
             datetime.now(UTC) + timedelta(days=self._retention_days),
         )
+        if self._restrictions is not None:
+            hold = await self._restrictions.active_hold(tenant_id, doc_id, datetime.now(UTC))
+            if hold is not None:
+                await self._restrictions.mark_restricted(tenant_id, doc_id)
+                outcomes = [
+                    LocationOutcome(
+                        location,
+                        doc_id,
+                        "restrict",
+                        "SKIPPED",
+                        f"法定保留至 {hold.statutory_until or '未定'}",
+                    )
+                    for location in _LOCATIONS
+                ]
+                for outcome in outcomes:
+                    await self._repo.record_scope(tenant_id, request_id, outcome)
+                await self._repo.finish_request(request_id, "RESTRICTED", datetime.now(UTC))
+                return ErasureResult(
+                    request_id=request_id,
+                    state="RESTRICTED",
+                    certificate_id=self._cert_id(request_id),
+                    outcomes=tuple(outcomes),
+                )
+
         chunk_ids = await self._store.list_chunk_ids(tenant_id, doc_id)
         outcomes = await self._execute_locations(tenant_id, doc_id, chunk_ids)
 

@@ -15,10 +15,13 @@ from kb.compliance.erasure import (
     request_id_for,
 )
 from kb.compliance.pii import DetectedPII, detect_pii, normalize_pii, subject_key
+from kb.compliance.restriction import HoldInfo, RestrictionService
 from kb.compliance.subject_erasure import SubjectErasureService
 from kb.compliance.subject_index import PostgresSubjectIndexer
 
 __all__ = [
+    "HoldInfo",
+    "RestrictionService",
     "KeyDestroyedError",
     "KeyManager",
     "SoftwareKeyManager",

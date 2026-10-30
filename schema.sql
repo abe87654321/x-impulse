@@ -319,7 +319,8 @@ INSERT INTO erasure_location_types VALUES
  ('audit',        '审计日志',     'crypto_shred',true),
  ('backup',       '备份与归档',   'crypto_shred',true),
  ('curated_qa',   '精选问答',     'redact',      true),
- ('eval_case',    '评测集',       'hard_delete', true);
+ ('eval_case',    '评测集',       'hard_delete', true),
+ ('document',     '文档（限制处理）','hard_delete', true);
 -- 将来新增位置（如实体表）只需 INSERT 一行，无需改表结构或删除编排代码
 
 CREATE TABLE subject_index (            -- 个人信息主体（HMAC，不可枚举）—— FR-12-19 / A-8
