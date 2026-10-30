@@ -16,6 +16,7 @@ from kb.generation.citations import (
     build_prompt,
     split_sentences,
 )
+from kb.generation.extractive import ExtractiveGenerator
 from kb.generation.llm import (
     GenerationError,
     JsonTransport,
@@ -33,6 +34,7 @@ __all__ = [
     "Citation",
     "CitationBinder",
     "EvidenceRetriever",
+    "ExtractiveGenerator",
     "GenerationError",
     "Generator",
     "JsonTransport",

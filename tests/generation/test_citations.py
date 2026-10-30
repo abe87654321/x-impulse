@@ -82,6 +82,13 @@ def test_duplicate_markers_are_deduplicated():
     assert len(answer.citations) == 1
 
 
+def test_marker_after_sentence_punctuation_stays_with_previous_sentence():
+    answer = CitationBinder(_evidence(make_record("c1"))).bind("事实句。[1]")
+
+    assert len(answer.sentences) == 1
+    assert answer.text == "事实句。"
+
+
 def test_markers_are_removed_from_display_text():
     answer = CitationBinder(_evidence(make_record("c1"))).bind("事实句[1]。")
 

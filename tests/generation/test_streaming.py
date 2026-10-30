@@ -35,6 +35,16 @@ async def test_yields_grounded_sentences_as_they_complete():
     assert [e.sentence_index for e in events] == [0, 1]
 
 
+async def test_marker_arriving_in_later_token_stays_with_previous_sentence():
+    binder = CitationBinder(_evidence("c1"))
+
+    events = [e async for e in binder.bind_stream(_tokens(["事实句。", "[1]"]))]
+
+    assert [e.kind for e in events] == ["sentence"]
+    assert events[0].text == "事实句。"
+    assert events[0].citations[0].chunk_id == "c1"
+
+
 async def test_stream_without_grounded_sentence_ends_in_refusal():
     binder = CitationBinder(_evidence("c1"))
 

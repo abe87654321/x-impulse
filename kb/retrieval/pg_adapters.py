@@ -256,7 +256,7 @@ class HybridRecallBackend:
         results: list[ScoredChunk] = []
         for hit in hits:
             record = by_id.get(hit.chunk_id)
-            if record is None:
+            if record is None or hit.score <= 0:
                 continue
             if not _metadata_allows(recall_filter.metadata, record):
                 continue

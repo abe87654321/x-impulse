@@ -72,15 +72,24 @@ class Generator(Protocol):
 
 
 def split_sentences(text: str) -> list[str]:
-    """按中英文句末标点与换行切句；保留标点，不丢内容。"""
+    """按中英文句末标点与换行切句；保留标点，不丢内容。
+
+    句末标点后的引用标记（如 "。[1]"）归入前一句，避免标记被切到下一句
+    而造成原句"无引用"被误删。
+    """
     sentences: list[str] = []
     start = 0
-    for i, ch in enumerate(text):
-        if ch in _SENTENCE_END:
-            sentence = text[start : i + 1]
+    i = 0
+    while i < len(text):
+        if text[i] in _SENTENCE_END:
+            end = _absorb_markers(text, i + 1)
+            sentence = text[start:end]
             if sentence.strip():
                 sentences.append(sentence)
-            start = i + 1
+            start = end
+            i = end
+        else:
+            i += 1
     tail = text[start:]
     if tail.strip():
         sentences.append(tail)
@@ -148,7 +157,9 @@ class CitationBinder:
             buffer += token
             while True:
                 end = _first_sentence_end(buffer)
-                if end is None:
+                # 句末恰好落在缓冲末尾时先等下一个 token：
+                # 引用标记可能紧随标点、在下一次输出里才到达。
+                if end is None or end == len(buffer):
                     break
                 raw_sentence, buffer = buffer[:end], buffer[end:]
                 bound = self._bind_sentence(raw_sentence, index)
@@ -235,8 +246,18 @@ def _snapshot(record: ChunkRecord, sentence_index: int) -> Citation:
 def _first_sentence_end(buffer: str) -> int | None:
     for i, ch in enumerate(buffer):
         if ch in _SENTENCE_END:
-            return i + 1
+            return _absorb_markers(buffer, i + 1)
     return None
+
+
+def _absorb_markers(text: str, position: int) -> int:
+    """把句末标点后紧跟的 [n] 标记并入当前句。"""
+    end = position
+    while True:
+        match = _MARKER_RE.match(text, end)
+        if match is None:
+            return end
+        end = match.end()
 
 
 __all__ = [
