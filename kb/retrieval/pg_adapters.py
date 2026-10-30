@@ -21,6 +21,7 @@ from kb.database import Database
 from kb.identity.permissions import AclRow, DelegationContext, ScopeLevel, build_chain, evaluate
 from kb.indexing.embedding import Embedder
 from kb.indexing.vector_store import VectorStore
+from kb.retrieval.bm25 import rank as bm25_rank
 from kb.retrieval.cache import InMemoryQueryCache
 from kb.retrieval.models import (
     ChunkRecord,
@@ -61,14 +62,16 @@ WHERE c.tenant_id = $1
   AND d.status = 'indexed'
   AND d.doc_id = ANY($2::text[])
   AND d.audience = ANY($3::text[])
-  AND c.content ILIKE '%' || $4 || '%'
-  AND (cardinality($5::text[]) = 0 OR d.department = ANY($5::text[]))
-  AND (cardinality($6::text[]) = 0 OR d.doc_type = ANY($6::text[]))
-  AND ($7::timestamptz IS NULL OR d.source_updated_at >= $7)
-  AND ($8::timestamptz IS NULL OR d.effective_until IS NULL OR d.effective_until > $8)
+  AND (cardinality($4::text[]) = 0 OR d.department = ANY($4::text[]))
+  AND (cardinality($5::text[]) = 0 OR d.doc_type = ANY($5::text[]))
+  AND ($6::timestamptz IS NULL OR d.source_updated_at >= $6)
+  AND ($7::timestamptz IS NULL OR d.effective_until IS NULL OR d.effective_until > $7)
 ORDER BY c.chunk_id
-LIMIT $9
+LIMIT $8
 """
+
+# 开发期语料上限：BM25 在应用层对候选集打分，全量扫描不适合百万级。
+_BM25_CORPUS_LIMIT = 5000
 
 _AUDIENCE_SQL = """
 SELECT dp.audience_filter
@@ -219,17 +222,18 @@ class HybridRecallBackend:
             self._tenant_id,
             sorted(recall_filter.allowed_doc_ids),
             sorted(recall_filter.audience_allowlist),
-            query,
             sorted(metadata.departments),
             sorted(metadata.doc_types),
             metadata.updated_after,
             metadata.exclude_expired_at,
-            limit,
+            _BM25_CORPUS_LIMIT,
         )
-        return [
-            ScoredChunk(record=_to_record(row), score=_lexical_score(query, str(row["content"])))
-            for row in rows
-        ]
+        records = [_to_record(row) for row in rows]
+        by_id = {record.chunk_id: record for record in records}
+        ranked = bm25_rank(
+            query, [(record.chunk_id, record.content) for record in records], limit=limit
+        )
+        return [ScoredChunk(record=by_id[chunk_id], score=score) for chunk_id, score in ranked]
 
     async def _vector(
         self, query: str, limit: int, recall_filter: RecallFilter
@@ -295,12 +299,6 @@ class HybridRetrievalService:
         self, ctx: DelegationContext, query: str, *, k: int | None = None
     ) -> list[RetrievedChunk]:
         return await self._retriever.retrieve(ctx, query, tenant_id=self._tenant_id, k=k)
-
-
-def _lexical_score(query: str, content: str) -> float:
-    if not query:
-        return 0.0
-    return float(content.count(query) or 1)
 
 
 def _metadata_allows(metadata: MetadataFilter, record: ChunkRecord) -> bool:
