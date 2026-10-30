@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from kb.indexing.ids import document_id
 from kb.indexing.pipeline import IndexingPipeline
-from kb.indexing.suppression import InMemorySuppressionChecker
+from kb.indexing.suppression import InMemorySuppressionChecker, document_scope_key
 from kb.parsing.chunking import ChunkingConfig, chunk_document
 from kb.parsing.normalize import content_hash, normalize
 from tests.indexing.fakes import FakeConnector, FakeDoc, InMemoryStore
@@ -75,7 +75,9 @@ async def test_changed_document_increments_version_and_rechunks():
 
 async def test_suppressed_document_is_not_indexed():
     store = InMemoryStore()
-    suppression = InMemorySuppressionChecker({(TENANT, "document", "ext-1")})
+    suppression = InMemorySuppressionChecker(
+        {(TENANT, "document", document_scope_key(SOURCE, "ext-1"))}
+    )
     pipeline = _pipeline(
         FakeConnector([FakeDoc("ext-1", "不应入库。")]), store, suppression=suppression
     )

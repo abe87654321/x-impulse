@@ -16,6 +16,11 @@ from kb.database import dsn_from_env
 ScopeType = str  # document | subject | chunk_hash
 
 
+def document_scope_key(source_id: str, external_id: str) -> str:
+    """与删除链路共用的文档抑制键格式；哈希由 checker/hasher 统一完成。"""
+    return f"{source_id}\x00{external_id}"
+
+
 class SuppressionChecker(Protocol):
     async def is_suppressed(
         self, tenant_id: str, scope_type: ScopeType, scope_key: str
@@ -61,6 +66,7 @@ class PostgresSuppressionChecker:
 
 
 __all__ = [
+    "document_scope_key",
     "InMemorySuppressionChecker",
     "NullSuppressionChecker",
     "PostgresSuppressionChecker",

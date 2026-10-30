@@ -26,7 +26,11 @@ from kb.indexing.models import (
 )
 from kb.indexing.parser import Parser, TextParser
 from kb.indexing.store import DocumentStore
-from kb.indexing.suppression import NullSuppressionChecker, SuppressionChecker
+from kb.indexing.suppression import (
+    NullSuppressionChecker,
+    SuppressionChecker,
+    document_scope_key,
+)
 from kb.indexing.vector_index import VectorIndexer
 from kb.ingestion.contract import (
     AclSet,
@@ -110,7 +114,11 @@ class IndexingPipeline:
     async def index_ref(self, ref: DocumentRef) -> ReindexOutcome:
         """索引单个文档。增量同步也走这里。"""
         try:
-            if await self._suppression.is_suppressed(self._tenant_id, "document", ref.external_id):
+            if await self._suppression.is_suppressed(
+                self._tenant_id,
+                "document",
+                document_scope_key(self._source_id, ref.external_id),
+            ):
                 return ReindexOutcome(status="suppressed")
 
             raw = await self._connector.fetch_content(ref)

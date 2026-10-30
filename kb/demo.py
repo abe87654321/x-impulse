@@ -25,6 +25,7 @@ from kb.indexing.deletion import DocumentDeletionService
 from kb.indexing.embedding import HashingEmbedder
 from kb.indexing.pipeline import IndexingPipeline
 from kb.indexing.store import PostgresDocumentStore
+from kb.indexing.suppression import PostgresSuppressionChecker
 from kb.indexing.sync import PostgresSyncRunRepository, SourceSyncService, SyncResult
 from kb.indexing.vector_index import VectorIndexer
 from kb.indexing.vector_store import InMemoryVectorStore
@@ -58,6 +59,15 @@ def _context(principal_id: str) -> DelegationContext:
         expires_at=now + timedelta(hours=1),
         evidence={"channel": "demo"},
     )
+
+
+def _suppression_checker() -> PostgresSuppressionChecker | None:
+    pepper = os.environ.get("KB_SUPPRESSION_PEPPER")
+    if not pepper:
+        return None
+    from kb.compliance.pii import subject_key
+
+    return PostgresSuppressionChecker(lambda value: subject_key(value, pepper))
 
 
 def _generator() -> Generator:
@@ -97,6 +107,7 @@ async def run_demo(
         tenant_id=tenant_id,
         source_id=source_id,
         chunking=ChunkingConfig(),
+        suppression=_suppression_checker(),
         vector_indexer=VectorIndexer(embedder, vectors, collection=collection),
     )
     deletion = DocumentDeletionService(store, vectors, InMemoryQueryCache(), collection=collection)

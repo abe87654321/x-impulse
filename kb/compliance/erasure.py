@@ -26,6 +26,7 @@ import asyncpg
 from kb.database import dsn_from_env
 from kb.indexing.deletion import CacheInvalidator
 from kb.indexing.store import DocumentStore
+from kb.indexing.suppression import document_scope_key
 from kb.indexing.vector_store import VectorStore
 
 ScopeStatus = Literal["PENDING", "LOGICAL_DONE", "PHYSICAL_DONE", "FAILED", "SKIPPED"]
@@ -338,7 +339,7 @@ class DocumentErasureService:
         await self._repo.put_suppression(
             tenant_id,
             "document",
-            self._hasher(f"{source_id}\x00{external_id}"),
+            self._hasher(document_scope_key(source_id, external_id)),
             reason,
         )
 
