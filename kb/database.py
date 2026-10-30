@@ -23,6 +23,10 @@ class Database:
     def __init__(self, dsn: str | None = None) -> None:
         self._dsn = dsn or dsn_from_env()
 
+    @property
+    def dsn(self) -> str:
+        return self._dsn
+
     def fetch(self, sql: str, *args: object) -> list[dict[str, object]]:
         return asyncio.run(self._fetch(sql, *args))
 
