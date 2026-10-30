@@ -32,6 +32,10 @@ class ChunkRecord:
     seq: int
     char_start: int
     char_end: int
+    page_no: int | None = None
+    section_path: str | None = None
+    clause_no: str | None = None
+    doc_version: str = "1"
 
 
 @dataclass(frozen=True)
