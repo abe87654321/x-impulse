@@ -80,6 +80,13 @@ DELETE FROM chunk_vectors cv USING chunks c
 WHERE cv.chunk_id = c.chunk_id AND c.tenant_id = $1 AND c.doc_id = $2
 """
 
+_DETACH_CITATIONS_SQL = """
+UPDATE citations SET chunk_id = NULL
+WHERE chunk_id IN (
+    SELECT chunk_id FROM chunks WHERE tenant_id = $1 AND doc_id = $2
+)
+"""
+
 _DELETE_CHUNKS_SQL = """
 DELETE FROM chunks WHERE tenant_id = $1 AND doc_id = $2
 """
@@ -276,6 +283,8 @@ class PostgresDocumentStore:
         try:
             async with conn.transaction():
                 await conn.execute(_DELETE_CHUNK_VECTORS_SQL, tenant_id, doc_id)
+                # R-11：chunk 删除后引用悬空，但快照字段必须保留。
+                await conn.execute(_DETACH_CITATIONS_SQL, tenant_id, doc_id)
                 await conn.execute(_DELETE_CHUNKS_SQL, tenant_id, doc_id)
                 await conn.execute(_DELETE_ANNOTATIONS_SQL, tenant_id, doc_id)
                 await conn.execute(_DELETE_ACL_DOC_SQL, tenant_id, doc_id)
