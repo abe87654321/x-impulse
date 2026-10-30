@@ -7,9 +7,12 @@ import asyncio
 import pytest
 
 from kb.database import Database
+from kb.indexing.embedding import HashingEmbedder
 from kb.indexing.ids import document_id
 from kb.indexing.pipeline import IndexingPipeline
 from kb.indexing.store import PostgresDocumentStore
+from kb.indexing.vector_index import VectorIndexer
+from kb.indexing.vector_store import InMemoryVectorStore
 from kb.parsing.chunking import ChunkingConfig
 from kb.parsing.normalize import content_hash, normalize
 from tests.indexing.fakes import FakeConnector, FakeDoc
@@ -24,6 +27,13 @@ EXTERNAL = "ext-it-1"
 def _cleanup() -> None:
     db = Database()
     db.execute("DELETE FROM acl_entries WHERE source_id = $1", SOURCE)
+    db.execute(
+        """
+        DELETE FROM chunk_vectors cv USING chunks c
+        WHERE c.chunk_id = cv.chunk_id AND c.doc_id = $1
+        """,
+        document_id(SOURCE, EXTERNAL),
+    )
     db.execute("DELETE FROM chunks WHERE doc_id = $1", document_id(SOURCE, EXTERNAL))
     db.execute("DELETE FROM documents WHERE source_id = $1", SOURCE)
     db.execute("DELETE FROM sources WHERE source_id = $1", SOURCE)
@@ -48,6 +58,12 @@ def _run(connector: FakeConnector) -> object:
         tenant_id=TENANT,
         source_id=SOURCE,
         chunking=ChunkingConfig(target_tokens=20, max_tokens=30, min_tokens=5, overlap_ratio=0.0),
+        vector_indexer=VectorIndexer(
+            HashingEmbedder(dimension=16),
+            InMemoryVectorStore(),
+            collection="test_chunks",
+            vector_store_name="memory",
+        ),
     )
     return asyncio.run(pipeline.run())
 
@@ -86,6 +102,13 @@ def test_postgres_store_roundtrip_and_versions():
             )
             assert chunk["version"] == 1
 
+        vectors = db.fetch(
+            "SELECT count(*) AS n FROM chunk_vectors cv JOIN chunks c "
+            "ON c.chunk_id = cv.chunk_id WHERE c.doc_id = $1",
+            doc["doc_id"],
+        )
+        assert vectors[0]["n"] == len(chunks)
+
         acls = db.fetch(
             "SELECT principal_id, effect, inheritance_broken FROM acl_entries WHERE object_id = $1",
             doc["doc_id"],
@@ -105,5 +128,11 @@ def test_postgres_store_roundtrip_and_versions():
             "SELECT version FROM chunks WHERE doc_id = $1", document_id(SOURCE, EXTERNAL)
         )
         assert chunks[0]["version"] == 2
+        vectors = db.fetch(
+            "SELECT count(*) AS n FROM chunk_vectors cv JOIN chunks c "
+            "ON c.chunk_id = cv.chunk_id WHERE c.doc_id = $1",
+            document_id(SOURCE, EXTERNAL),
+        )
+        assert vectors[0]["n"] == 1
     finally:
         _cleanup()

@@ -1,7 +1,9 @@
 """索引流水线 —— 连接器数据落库、切分与 ACL 同步。"""
 
+from kb.indexing.embedding import Embedder, HashingEmbedder
 from kb.indexing.ids import acl_id, chunk_id, document_id
 from kb.indexing.models import (
+    ChunkVectorEntry,
     IndexingStats,
     PreparedChunk,
     PreparedDocument,
@@ -16,11 +18,23 @@ from kb.indexing.suppression import (
     PostgresSuppressionChecker,
     SuppressionChecker,
 )
+from kb.indexing.vector_index import VectorIndexer
+from kb.indexing.vector_store import (
+    InMemoryVectorStore,
+    QdrantVectorStore,
+    VectorHit,
+    VectorPoint,
+    VectorStore,
+)
 
 __all__ = [
     "TEXT_PARSER_VERSION",
+    "ChunkVectorEntry",
     "DocumentStore",
+    "Embedder",
+    "HashingEmbedder",
     "InMemorySuppressionChecker",
+    "InMemoryVectorStore",
     "IndexingPipeline",
     "IndexingStats",
     "NullSuppressionChecker",
@@ -30,8 +44,13 @@ __all__ = [
     "PreparedChunk",
     "PreparedDocument",
     "StoredDocument",
+    "QdrantVectorStore",
     "SuppressionChecker",
     "TextParser",
+    "VectorHit",
+    "VectorIndexer",
+    "VectorPoint",
+    "VectorStore",
     "acl_id",
     "chunk_id",
     "document_id",

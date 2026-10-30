@@ -53,6 +53,15 @@ class PreparedDocument:
 
 
 @dataclass(frozen=True)
+class ChunkVectorEntry:
+    chunk_id: str
+    model_name: str
+    model_version: str
+    vector_store: str
+    collection: str
+
+
+@dataclass(frozen=True)
 class IndexingStats:
     scanned: int = 0
     indexed: int = 0

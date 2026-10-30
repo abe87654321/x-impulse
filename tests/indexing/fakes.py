@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
-from kb.indexing.models import PreparedDocument, StoredDocument
+from kb.indexing.models import ChunkVectorEntry, PreparedDocument, StoredDocument
 from kb.ingestion.contract import (
     AclEntry,
     AclSet,
@@ -108,6 +108,7 @@ class InMemoryStore:
     def __init__(self) -> None:
         self.documents: dict[tuple[str, str, str], StoredDocument] = {}
         self.prepared: dict[str, PreparedDocument] = {}
+        self.chunk_vectors: dict[str, ChunkVectorEntry] = {}
 
     async def get_document(
         self, tenant_id: str, source_id: str, external_id: str
@@ -122,3 +123,9 @@ class InMemoryStore:
             version=prepared.doc_version,
         )
         self.prepared[prepared.doc_id] = prepared
+
+    async def record_chunk_vectors(
+        self, tenant_id: str, entries: Sequence[ChunkVectorEntry]
+    ) -> None:
+        for entry in entries:
+            self.chunk_vectors[entry.chunk_id] = entry

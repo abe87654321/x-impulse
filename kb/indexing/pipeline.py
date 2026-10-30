@@ -25,6 +25,7 @@ from kb.indexing.models import (
 from kb.indexing.parser import Parser, TextParser
 from kb.indexing.store import DocumentStore
 from kb.indexing.suppression import NullSuppressionChecker, SuppressionChecker
+from kb.indexing.vector_index import VectorIndexer
 from kb.ingestion.contract import (
     AclSet,
     Connector,
@@ -59,6 +60,7 @@ class IndexingPipeline:
         chunking: ChunkingConfig | None = None,
         token_counter: TokenCounter = estimate_tokens,
         suppression: SuppressionChecker | None = None,
+        vector_indexer: VectorIndexer | None = None,
     ) -> None:
         self._connector = connector
         self._store = store
@@ -68,6 +70,7 @@ class IndexingPipeline:
         self._chunking = chunking or ChunkingConfig()
         self._token_counter = token_counter
         self._suppression = suppression or NullSuppressionChecker()
+        self._vector_indexer = vector_indexer
 
     async def run(self, scope: Scope | None = None) -> IndexingStats:
         scanned = indexed = skipped = suppressed = failed = 0
@@ -105,6 +108,8 @@ class IndexingPipeline:
                 acl = await self._acl_for(ref)
                 prepared = self._prepare(ref, raw, normalized, digest, existing, kept, acl)
                 await self._store.apply(prepared)
+                if self._vector_indexer is not None:
+                    await self._vector_indexer.index(prepared, self._store)
                 indexed += 1
             except ConnectorError as exc:
                 failed += 1

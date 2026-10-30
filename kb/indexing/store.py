@@ -9,13 +9,19 @@ chunk 版本规则：同一 chunk_id 内容未变则 version 不变；内容变�
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Protocol
 
 import asyncpg
 
 from kb.database import dsn_from_env
 from kb.indexing.ids import acl_id
-from kb.indexing.models import PreparedChunk, PreparedDocument, StoredDocument
+from kb.indexing.models import (
+    ChunkVectorEntry,
+    PreparedChunk,
+    PreparedDocument,
+    StoredDocument,
+)
 
 _GET_DOC_SQL = """
 SELECT doc_id, content_hash, version
@@ -49,8 +55,28 @@ _EXISTING_CHUNKS_SQL = """
 SELECT chunk_id, content_hash, version FROM chunks WHERE doc_id = $1
 """
 
+_DELETE_MISSING_VECTORS_SQL = """
+DELETE FROM chunk_vectors cv
+USING chunks c
+WHERE cv.chunk_id = c.chunk_id
+  AND c.doc_id = $1
+  AND NOT (c.chunk_id = ANY($2::text[]))
+"""
+
 _DELETE_MISSING_CHUNKS_SQL = """
 DELETE FROM chunks WHERE doc_id = $1 AND NOT (chunk_id = ANY($2::text[]))
+"""
+
+_UPSERT_CHUNK_VECTOR_SQL = """
+INSERT INTO chunk_vectors
+    (chunk_id, tenant_id, model_name, model_version, vector_store, collection, indexed_at)
+VALUES ($1, $2, $3, $4, $5, $6, now())
+ON CONFLICT (chunk_id) DO UPDATE SET
+    model_name = EXCLUDED.model_name,
+    model_version = EXCLUDED.model_version,
+    vector_store = EXCLUDED.vector_store,
+    collection = EXCLUDED.collection,
+    indexed_at = now()
 """
 
 _UPSERT_CHUNK_SQL = """
@@ -91,6 +117,10 @@ class DocumentStore(Protocol):
     ) -> StoredDocument | None: ...
 
     async def apply(self, prepared: PreparedDocument) -> None: ...
+
+    async def record_chunk_vectors(
+        self, tenant_id: str, entries: Sequence[ChunkVectorEntry]
+    ) -> None: ...
 
 
 class PostgresDocumentStore:
@@ -149,6 +179,7 @@ class PostgresDocumentStore:
             str(row["chunk_id"]): (str(row["content_hash"]), int(row["version"])) for row in rows
         }
         new_ids = [chunk.chunk_id for chunk in prepared.chunks]
+        await conn.execute(_DELETE_MISSING_VECTORS_SQL, prepared.doc_id, new_ids)
         await conn.execute(_DELETE_MISSING_CHUNKS_SQL, prepared.doc_id, new_ids)
 
         for chunk in prepared.chunks:
@@ -187,6 +218,27 @@ class PostgresDocumentStore:
                 prepared.inheritance_broken,
                 prepared.source_id,
             )
+
+    async def record_chunk_vectors(
+        self, tenant_id: str, entries: Sequence[ChunkVectorEntry]
+    ) -> None:
+        if not entries:
+            return
+        conn = await asyncpg.connect(self._dsn)
+        try:
+            async with conn.transaction():
+                for entry in entries:
+                    await conn.execute(
+                        _UPSERT_CHUNK_VECTOR_SQL,
+                        entry.chunk_id,
+                        tenant_id,
+                        entry.model_name,
+                        entry.model_version,
+                        entry.vector_store,
+                        entry.collection,
+                    )
+        finally:
+            await conn.close()
 
 
 def _chunk_version(chunk: PreparedChunk, existing: dict[str, tuple[str, int]]) -> int:
