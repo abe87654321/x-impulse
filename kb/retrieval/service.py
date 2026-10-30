@@ -16,11 +16,12 @@ from kb.identity.permissions import (
     evaluate,
 )
 from kb.identity.repository import DEFAULT_TENANT, AclRepository
+from kb.retrieval.models import ChunkRecord
 
 _CANDIDATE_SQL = """
-SELECT c.chunk_id, c.doc_id, c.tenant_id, c.content, c.content_hash, c.version,
+SELECT c.chunk_id, c.doc_id, c.tenant_id, c.seq, c.content, c.content_hash, c.version,
        c.char_start, c.char_end, c.page_no, c.section_path, c.clause_no,
-       d.source_id, d.title, d.audience, d.doc_type, d.department,
+       d.source_id, d.title, d.audience, d.status, d.doc_type, d.department,
        d.effective_until, d.source_updated_at, d.version AS doc_version
 FROM chunks c
 JOIN documents d ON d.doc_id = c.doc_id
@@ -36,6 +37,7 @@ class SearchHit:
     tenant_id: str
     chunk_id: str
     doc_id: str
+    seq: int
     source_id: str
     content: str
     content_hash: str
@@ -43,6 +45,7 @@ class SearchHit:
     doc_version: str
     title: str
     audience: str
+    status: str
     doc_type: str | None
     department: str | None
     effective_until: datetime | None
@@ -52,6 +55,30 @@ class SearchHit:
     clause_no: str | None
     char_start: int
     char_end: int
+
+    def to_chunk_record(self) -> ChunkRecord:
+        return ChunkRecord(
+            chunk_id=self.chunk_id,
+            doc_id=self.doc_id,
+            tenant_id=self.tenant_id,
+            content=self.content,
+            chunk_version=self.chunk_version,
+            chunk_content_hash=self.content_hash,
+            audience=self.audience,
+            department=self.department,
+            doc_type=self.doc_type,
+            effective_until=self.effective_until,
+            status=self.status,
+            source_updated_at=self.source_updated_at,
+            title=self.title,
+            seq=self.seq,
+            char_start=self.char_start,
+            char_end=self.char_end,
+            page_no=self.page_no,
+            section_path=self.section_path,
+            clause_no=self.clause_no,
+            doc_version=self.doc_version,
+        )
 
 
 class RetrievalService:
@@ -76,6 +103,11 @@ class RetrievalService:
 
     def search(self, ctx: DelegationContext, query: str, *, limit: int = 50) -> list[SearchHit]:
         return self.recheck(ctx, self.prefilter(ctx, query, limit=limit))
+
+    def search_chunks(
+        self, ctx: DelegationContext, query: str, *, limit: int = 50
+    ) -> list[ChunkRecord]:
+        return [hit.to_chunk_record() for hit in self.search(ctx, query, limit=limit)]
 
     # ── 内部 ────────────────────────────────────────────
 
@@ -109,6 +141,7 @@ def _to_hit(row: dict[str, object]) -> SearchHit:
         tenant_id=str(row["tenant_id"]),
         chunk_id=str(row["chunk_id"]),
         doc_id=str(row["doc_id"]),
+        seq=int(str(row["seq"])),
         source_id=str(row["source_id"]),
         content=str(row["content"]),
         content_hash=str(row["content_hash"]),
@@ -116,6 +149,7 @@ def _to_hit(row: dict[str, object]) -> SearchHit:
         doc_version=str(row["doc_version"]),
         title=str(row["title"]),
         audience=str(row["audience"]),
+        status=str(row["status"]),
         doc_type=_optional_str(row["doc_type"]),
         department=_optional_str(row["department"]),
         effective_until=_optional_dt(row["effective_until"]),
