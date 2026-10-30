@@ -1,0 +1,207 @@
+"""对话服务 —— 会话、查询、答案、引用的持久化与审计。
+
+FR-09-01 × FR-12-16：默认不落问题原文（raw_text 保持 NULL），
+只存归一化哈希与长度。审计只记录 query_id / text_hash，不记录原文。
+"""
+
+from __future__ import annotations
+
+import hashlib
+import time
+import uuid
+from dataclasses import dataclass
+from datetime import UTC, datetime
+
+import asyncpg
+
+from kb.audit.writer import AuditEvent, AuditStore
+from kb.database import dsn_from_env
+from kb.generation.answer_service import AnswerService
+from kb.generation.citations import Answer
+from kb.identity.permissions import DelegationContext
+
+_SESSION_SQL = """
+INSERT INTO sessions (session_id, tenant_id, principal_id, channel)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (session_id) DO UPDATE SET last_active_at = now()
+"""
+
+_QUERY_SQL = """
+INSERT INTO queries
+    (query_id, tenant_id, session_id, principal_id, actor_id, assurance_level,
+     channel, text_hash, text_length)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+"""
+
+_ANSWER_SQL = """
+INSERT INTO answers
+    (answer_id, tenant_id, query_id, text, refused, refusal_reason,
+     model_name, model_version, latency_ms)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+"""
+
+_CITATION_SQL = """
+INSERT INTO citations
+    (citation_id, tenant_id, answer_id, sentence_index, chunk_id, doc_id,
+     page_no, section_path, clause_no, char_start, char_end,
+     chunk_content_hash, chunk_version, doc_version)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+"""
+
+
+@dataclass(frozen=True)
+class ChatResult:
+    session_id: str
+    query_id: str
+    answer_id: str
+    answer: Answer
+
+
+class ChatService:
+    def __init__(
+        self,
+        answers: AnswerService,
+        *,
+        audit: AuditStore | None = None,
+        model_name: str = "unknown",
+        model_version: str = "v1",
+        dsn: str | None = None,
+    ) -> None:
+        self._answers = answers
+        self._audit = audit
+        self._model_name = model_name
+        self._model_version = model_version
+        self._dsn = dsn or dsn_from_env()
+
+    async def ask(
+        self,
+        ctx: DelegationContext,
+        tenant_id: str,
+        question: str,
+        *,
+        session_id: str | None = None,
+        channel: str = "api",
+    ) -> ChatResult:
+        session = session_id or f"sess_{uuid.uuid4().hex}"
+        query_id = f"qry_{uuid.uuid4().hex}"
+        answer_id = f"ans_{uuid.uuid4().hex}"
+        principal_id = ctx.principal.id if ctx.principal else "anonymous"
+        actor_id = ctx.actor.id if ctx.actor else None
+        text_hash = hashlib.sha256(question.encode("utf-8")).hexdigest()
+
+        conn = await asyncpg.connect(self._dsn)
+        try:
+            async with conn.transaction():
+                await conn.execute(_SESSION_SQL, session, tenant_id, principal_id, channel)
+                await conn.execute(
+                    _QUERY_SQL,
+                    query_id,
+                    tenant_id,
+                    session,
+                    principal_id,
+                    actor_id,
+                    ctx.assurance_level,
+                    channel,
+                    text_hash,
+                    len(question),
+                )
+        finally:
+            await conn.close()
+
+        started = time.monotonic()
+        answer = await self._answers.answer(ctx, question)
+        latency_ms = int((time.monotonic() - started) * 1000)
+
+        conn = await asyncpg.connect(self._dsn)
+        try:
+            async with conn.transaction():
+                await conn.execute(
+                    _ANSWER_SQL,
+                    answer_id,
+                    tenant_id,
+                    query_id,
+                    answer.text,
+                    answer.refused,
+                    answer.refusal_reason,
+                    self._model_name,
+                    self._model_version,
+                    latency_ms,
+                )
+                for citation in answer.citations:
+                    await conn.execute(
+                        _CITATION_SQL,
+                        f"cit_{uuid.uuid4().hex}",
+                        tenant_id,
+                        answer_id,
+                        citation.sentence_index,
+                        citation.chunk_id,
+                        citation.doc_id,
+                        citation.page_no,
+                        citation.section_path,
+                        citation.clause_no,
+                        citation.char_start,
+                        citation.char_end,
+                        citation.chunk_content_hash,
+                        citation.chunk_version,
+                        citation.doc_version,
+                    )
+        finally:
+            await conn.close()
+
+        await self._audit_events(ctx, tenant_id, question, session, query_id, answer_id, answer)
+        return ChatResult(session_id=session, query_id=query_id, answer_id=answer_id, answer=answer)
+
+    async def _audit_events(
+        self,
+        ctx: DelegationContext,
+        tenant_id: str,
+        question: str,
+        session_id: str,
+        query_id: str,
+        answer_id: str,
+        answer: Answer,
+    ) -> None:
+        if self._audit is None:
+            return
+        delegation = (ctx.actor.id,) if ctx.actor else ()
+        await self._audit.append(
+            AuditEvent(
+                category="query",
+                action="ask",
+                tenant_id=tenant_id,
+                principal_id=ctx.principal.id if ctx.principal else None,
+                actor_id=ctx.actor.id if ctx.actor else None,
+                delegation_chain=delegation,
+                assurance_level=ctx.assurance_level,
+                target_type="session",
+                target_id=session_id,
+                payload={
+                    "query_id": query_id,
+                    "text_hash": hashlib.sha256(question.encode("utf-8")).hexdigest(),
+                    "text_length": len(question),
+                },
+            ),
+            now=datetime.now(UTC),
+        )
+        await self._audit.append(
+            AuditEvent(
+                category="answer",
+                action="refused" if answer.refused else "answered",
+                tenant_id=tenant_id,
+                principal_id=ctx.principal.id if ctx.principal else None,
+                actor_id=ctx.actor.id if ctx.actor else None,
+                delegation_chain=delegation,
+                assurance_level=ctx.assurance_level,
+                target_type="answer",
+                target_id=answer_id,
+                payload={
+                    "query_id": query_id,
+                    "refused": answer.refused,
+                    "citation_count": len(answer.citations),
+                },
+            ),
+            now=datetime.now(UTC),
+        )
+
+
+__all__ = ["ChatResult", "ChatService"]
