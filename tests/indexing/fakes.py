@@ -56,6 +56,10 @@ class FakeConnector(Connector):
     def __init__(self, docs: list[FakeDoc], *, supports_acl: bool = True) -> None:
         self.docs = {doc.external_id: doc for doc in docs}
         self._supports_acl = supports_acl
+        self.incremental_ids: list[str] = []
+        self.deleted_ids: set[str] = set()
+        self.cursor_token = "tok-1"
+        self.resume_token: str | None = None
 
     def capabilities(self) -> Capabilities:
         return Capabilities(
@@ -78,12 +82,20 @@ class FakeConnector(Connector):
     async def incremental_scan(
         self, scope: Scope, cursor: Cursor | None
     ) -> AsyncIterator[ChangeEvent]:
-        raise NotImplementedError
+        for external_id in self.incremental_ids:
+            doc = self.docs.get(external_id)
+            if doc is not None:
+                yield ChangeEvent(kind="updated", ref=doc.ref)
 
     async def detect_deletions(
         self, scope: Scope, known_ids: set[str]
     ) -> AsyncIterator[DeletionEvent]:
-        raise NotImplementedError
+        for external_id in sorted(self.deleted_ids & known_ids):
+            yield DeletionEvent(
+                external_id=external_id,
+                detected_by=DeletionDetection.ENUMERATE,
+                detected_at=NOW,
+            )
 
     async def fetch_acl(self, ref: DocumentRef) -> AclSet:
         return self.docs[ref.external_id].acl
@@ -98,10 +110,24 @@ class FakeConnector(Connector):
         )
 
     def checkpoint(self) -> Cursor:
-        raise NotImplementedError
+        return Cursor(source_id="fake-source", token=self.cursor_token, issued_at=NOW)
 
     def resume(self, cursor: Cursor) -> None:
-        raise NotImplementedError
+        self.resume_token = cursor.token
+
+
+class InMemorySyncRunRepository:
+    def __init__(self) -> None:
+        self.runs: list[tuple[str, str, object]] = []
+        self.cursor: str | None = None
+
+    async def latest_cursor(self, tenant_id: str, source_id: str) -> str | None:
+        return self.cursor
+
+    async def record(self, tenant_id: str, source_id: str, result) -> None:
+        self.runs.append((tenant_id, source_id, result))
+        if result.status == "succeeded":
+            self.cursor = result.cursor_after
 
 
 class InMemoryStore:
@@ -129,6 +155,13 @@ class InMemoryStore:
     ) -> None:
         for entry in entries:
             self.chunk_vectors[entry.chunk_id] = entry
+
+    async def list_external_ids(self, tenant_id: str, source_id: str) -> set[str]:
+        return {
+            prepared.external_id
+            for prepared in self.prepared.values()
+            if prepared.tenant_id == tenant_id and prepared.source_id == source_id
+        }
 
     async def list_chunk_ids(self, tenant_id: str, doc_id: str) -> list[str]:
         prepared = self.prepared.get(doc_id)

@@ -23,6 +23,13 @@ from kb.indexing.suppression import (
     PostgresSuppressionChecker,
     SuppressionChecker,
 )
+from kb.indexing.sync import (
+    PostgresSyncRunRepository,
+    SourceSyncService,
+    SyncResult,
+    SyncRunRepository,
+    SyncStats,
+)
 from kb.indexing.vector_index import VectorIndexer
 from kb.indexing.vector_store import (
     InMemoryVectorStore,
@@ -48,12 +55,17 @@ __all__ = [
     "NullSuppressionChecker",
     "Parser",
     "PostgresDocumentStore",
+    "PostgresSyncRunRepository",
     "PostgresSuppressionChecker",
     "PreparedChunk",
     "PreparedDocument",
+    "SourceSyncService",
     "StoredDocument",
     "QdrantVectorStore",
     "SuppressionChecker",
+    "SyncResult",
+    "SyncRunRepository",
+    "SyncStats",
     "TextParser",
     "VectorHit",
     "VectorIndexer",

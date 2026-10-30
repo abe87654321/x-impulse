@@ -20,6 +20,7 @@ from kb.indexing.models import (
     IndexingStats,
     PreparedChunk,
     PreparedDocument,
+    ReindexOutcome,
     StoredDocument,
 )
 from kb.indexing.parser import Parser, TextParser
@@ -78,42 +79,17 @@ class IndexingPipeline:
 
         async for ref in self._connector.full_scan(scope or Scope()):
             scanned += 1
-            try:
-                if await self._suppression.is_suppressed(
-                    self._tenant_id, "document", ref.external_id
-                ):
-                    suppressed += 1
-                    continue
-
-                raw = await self._connector.fetch_content(ref)
-                text = self._parser.parse(raw)
-                normalized = normalize(text)
-                digest = content_hash(normalized)
-
-                existing = await self._store.get_document(
-                    self._tenant_id, self._source_id, ref.external_id
-                )
-                if existing is not None and existing.content_hash == digest:
-                    skipped += 1
-                    continue
-
-                chunks = chunk_document(
-                    normalized, self._chunking, token_counter=self._token_counter
-                )
-                kept = await self._drop_suppressed_chunks(chunks)
-                if not kept:
-                    suppressed += 1
-                    continue
-
-                acl = await self._acl_for(ref)
-                prepared = self._prepare(ref, raw, normalized, digest, existing, kept, acl)
-                await self._store.apply(prepared)
-                if self._vector_indexer is not None:
-                    await self._vector_indexer.index(prepared, self._store)
+            outcome = await self.index_ref(ref)
+            if outcome.status == "indexed":
                 indexed += 1
-            except ConnectorError as exc:
+            elif outcome.status == "skipped_unchanged":
+                skipped += 1
+            elif outcome.status == "suppressed":
+                suppressed += 1
+            else:
                 failed += 1
-                errors.append(f"{ref.external_id}: {exc}")
+                if outcome.error:
+                    errors.append(outcome.error)
 
         return IndexingStats(
             scanned=scanned,
@@ -123,6 +99,37 @@ class IndexingPipeline:
             failed=failed,
             errors=tuple(errors),
         )
+
+    async def index_ref(self, ref: DocumentRef) -> ReindexOutcome:
+        """索引单个文档。增量同步也走这里。"""
+        try:
+            if await self._suppression.is_suppressed(self._tenant_id, "document", ref.external_id):
+                return ReindexOutcome(status="suppressed")
+
+            raw = await self._connector.fetch_content(ref)
+            text = self._parser.parse(raw)
+            normalized = normalize(text)
+            digest = content_hash(normalized)
+
+            existing = await self._store.get_document(
+                self._tenant_id, self._source_id, ref.external_id
+            )
+            if existing is not None and existing.content_hash == digest:
+                return ReindexOutcome(status="skipped_unchanged")
+
+            chunks = chunk_document(normalized, self._chunking, token_counter=self._token_counter)
+            kept = await self._drop_suppressed_chunks(chunks)
+            if not kept:
+                return ReindexOutcome(status="suppressed")
+
+            acl = await self._acl_for(ref)
+            prepared = self._prepare(ref, raw, normalized, digest, existing, kept, acl)
+            await self._store.apply(prepared)
+            if self._vector_indexer is not None:
+                await self._vector_indexer.index(prepared, self._store)
+            return ReindexOutcome(status="indexed", created=existing is None)
+        except ConnectorError as exc:
+            return ReindexOutcome(status="failed", error=f"{ref.external_id}: {exc}")
 
     async def _drop_suppressed_chunks(self, chunks: Sequence[Chunk]) -> list[Chunk]:
         kept: list[Chunk] = []

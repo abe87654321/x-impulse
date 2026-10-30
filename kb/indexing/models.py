@@ -61,6 +61,16 @@ class ChunkVectorEntry:
     collection: str
 
 
+ReindexStatus = str  # indexed | skipped_unchanged | suppressed | failed
+
+
+@dataclass(frozen=True)
+class ReindexOutcome:
+    status: ReindexStatus
+    error: str | None = None
+    created: bool = False
+
+
 @dataclass(frozen=True)
 class IndexingStats:
     scanned: int = 0

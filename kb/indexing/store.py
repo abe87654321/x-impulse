@@ -67,6 +67,10 @@ _DELETE_MISSING_CHUNKS_SQL = """
 DELETE FROM chunks WHERE doc_id = $1 AND NOT (chunk_id = ANY($2::text[]))
 """
 
+_LIST_EXTERNAL_IDS_SQL = """
+SELECT external_id FROM documents WHERE tenant_id = $1 AND source_id = $2
+"""
+
 _LIST_CHUNK_IDS_SQL = """
 SELECT chunk_id FROM chunks WHERE tenant_id = $1 AND doc_id = $2 ORDER BY seq
 """
@@ -149,6 +153,8 @@ class DocumentStore(Protocol):
     ) -> None: ...
 
     async def list_chunk_ids(self, tenant_id: str, doc_id: str) -> list[str]: ...
+
+    async def list_external_ids(self, tenant_id: str, source_id: str) -> set[str]: ...
 
     async def delete_document(self, tenant_id: str, doc_id: str) -> None: ...
 
@@ -248,6 +254,14 @@ class PostgresDocumentStore:
                 prepared.inheritance_broken,
                 prepared.source_id,
             )
+
+    async def list_external_ids(self, tenant_id: str, source_id: str) -> set[str]:
+        conn = await asyncpg.connect(self._dsn)
+        try:
+            rows = await conn.fetch(_LIST_EXTERNAL_IDS_SQL, tenant_id, source_id)
+        finally:
+            await conn.close()
+        return {str(row["external_id"]) for row in rows}
 
     async def list_chunk_ids(self, tenant_id: str, doc_id: str) -> list[str]:
         conn = await asyncpg.connect(self._dsn)
