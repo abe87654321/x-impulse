@@ -169,6 +169,16 @@ class InMemoryStore:
             return []
         return [chunk.chunk_id for chunk in prepared.chunks]
 
+    async def delete_chunks(self, tenant_id: str, chunk_ids: list[str]) -> None:
+        for chunk_id in chunk_ids:
+            self.chunk_vectors.pop(chunk_id, None)
+        for doc_id, prepared in list(self.prepared.items()):
+            remaining = tuple(chunk for chunk in prepared.chunks if chunk.chunk_id not in chunk_ids)
+            if len(remaining) != len(prepared.chunks):
+                self.prepared[doc_id] = prepared.__class__(
+                    **{**prepared.__dict__, "chunks": remaining}
+                )
+
     async def delete_document(self, tenant_id: str, doc_id: str) -> None:
         self.prepared.pop(doc_id, None)
         for key, document in list(self.documents.items()):

@@ -44,6 +44,8 @@ class VectorStore(Protocol):
 
     async def delete_document(self, collection: str, *, tenant_id: str, doc_id: str) -> None: ...
 
+    async def delete_chunks(self, collection: str, chunk_ids: Sequence[str]) -> None: ...
+
     async def search(
         self,
         collection: str,
@@ -77,6 +79,11 @@ class InMemoryVectorStore:
             for chunk_id, point in bucket.items()
             if point.tenant_id == tenant_id and point.doc_id == doc_id
         ]:
+            bucket.pop(chunk_id, None)
+
+    async def delete_chunks(self, collection: str, chunk_ids: Sequence[str]) -> None:
+        bucket = self._collections.get(collection, {})
+        for chunk_id in chunk_ids:
             bucket.pop(chunk_id, None)
 
     async def search(
@@ -170,6 +177,16 @@ class QdrantVectorStore:
                 ]
             }
         }
+        status, _ = await self._call(
+            "POST", f"/collections/{collection}/points/delete?wait=true", payload
+        )
+        if status not in (200, 201):
+            raise VectorStoreError(f"删除向量失败：HTTP {status}")
+
+    async def delete_chunks(self, collection: str, chunk_ids: Sequence[str]) -> None:
+        if not chunk_ids:
+            return
+        payload = {"points": [_point_id(chunk_id) for chunk_id in chunk_ids]}
         status, _ = await self._call(
             "POST", f"/collections/{collection}/points/delete?wait=true", payload
         )

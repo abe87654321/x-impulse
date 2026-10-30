@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from typing import Protocol
 
 from kb.indexing.ids import chunk_id as make_chunk_id
 from kb.indexing.ids import document_id as make_document_id
@@ -49,6 +50,10 @@ from kb.parsing.normalize import (
 )
 
 
+class SubjectIndexer(Protocol):
+    async def index_chunk(self, tenant_id: str, chunk_id: str, text: str) -> int: ...
+
+
 class IndexingPipeline:
     def __init__(
         self,
@@ -62,6 +67,7 @@ class IndexingPipeline:
         token_counter: TokenCounter = estimate_tokens,
         suppression: SuppressionChecker | None = None,
         vector_indexer: VectorIndexer | None = None,
+        subject_indexer: SubjectIndexer | None = None,
     ) -> None:
         self._connector = connector
         self._store = store
@@ -72,6 +78,7 @@ class IndexingPipeline:
         self._token_counter = token_counter
         self._suppression = suppression or NullSuppressionChecker()
         self._vector_indexer = vector_indexer
+        self._subject_indexer = subject_indexer
 
     async def run(self, scope: Scope | None = None) -> IndexingStats:
         scanned = indexed = skipped = suppressed = failed = 0
@@ -127,6 +134,11 @@ class IndexingPipeline:
             await self._store.apply(prepared)
             if self._vector_indexer is not None:
                 await self._vector_indexer.index(prepared, self._store)
+            if self._subject_indexer is not None:
+                for chunk in prepared.chunks:
+                    await self._subject_indexer.index_chunk(
+                        self._tenant_id, chunk.chunk_id, chunk.content
+                    )
             return ReindexOutcome(status="indexed", created=existing is None)
         except ConnectorError as exc:
             return ReindexOutcome(status="failed", error=f"{ref.external_id}: {exc}")

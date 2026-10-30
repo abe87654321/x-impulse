@@ -91,6 +91,18 @@ _DELETE_CHUNKS_SQL = """
 DELETE FROM chunks WHERE tenant_id = $1 AND doc_id = $2
 """
 
+_DELETE_CHUNKS_BY_ID_SQL = """
+DELETE FROM chunks WHERE tenant_id = $1 AND chunk_id = ANY($2::text[])
+"""
+
+_DELETE_VECTORS_BY_ID_SQL = """
+DELETE FROM chunk_vectors WHERE chunk_id = ANY($1::text[])
+"""
+
+_DETACH_CITATIONS_BY_ID_SQL = """
+UPDATE citations SET chunk_id = NULL WHERE chunk_id = ANY($1::text[])
+"""
+
 _DELETE_ANNOTATIONS_SQL = """
 DELETE FROM annotations WHERE tenant_id = $1 AND doc_id = $2
 """
@@ -164,6 +176,8 @@ class DocumentStore(Protocol):
     async def list_external_ids(self, tenant_id: str, source_id: str) -> set[str]: ...
 
     async def delete_document(self, tenant_id: str, doc_id: str) -> None: ...
+
+    async def delete_chunks(self, tenant_id: str, chunk_ids: list[str]) -> None: ...
 
 
 class PostgresDocumentStore:
@@ -289,6 +303,18 @@ class PostgresDocumentStore:
                 await conn.execute(_DELETE_ANNOTATIONS_SQL, tenant_id, doc_id)
                 await conn.execute(_DELETE_ACL_DOC_SQL, tenant_id, doc_id)
                 await conn.execute(_DELETE_DOCUMENT_SQL, tenant_id, doc_id)
+        finally:
+            await conn.close()
+
+    async def delete_chunks(self, tenant_id: str, chunk_ids: list[str]) -> None:
+        if not chunk_ids:
+            return
+        conn = await asyncpg.connect(self._dsn)
+        try:
+            async with conn.transaction():
+                await conn.execute(_DELETE_VECTORS_BY_ID_SQL, list(chunk_ids))
+                await conn.execute(_DETACH_CITATIONS_BY_ID_SQL, list(chunk_ids))
+                await conn.execute(_DELETE_CHUNKS_BY_ID_SQL, tenant_id, list(chunk_ids))
         finally:
             await conn.close()
 
