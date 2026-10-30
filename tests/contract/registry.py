@@ -13,4 +13,12 @@
 
 from __future__ import annotations
 
-CONNECTORS: dict[str, dict] = {}
+from kb.ingestion.local_folder import LocalFolderConnector
+from tests.contract.local_folder_sandbox import LocalFolderSandbox
+
+CONNECTORS: dict[str, dict] = {
+    "local_folder": {
+        "connector": LocalFolderConnector,
+        "sandbox": LocalFolderSandbox,
+    },
+}
