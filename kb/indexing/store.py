@@ -67,6 +67,32 @@ _DELETE_MISSING_CHUNKS_SQL = """
 DELETE FROM chunks WHERE doc_id = $1 AND NOT (chunk_id = ANY($2::text[]))
 """
 
+_LIST_CHUNK_IDS_SQL = """
+SELECT chunk_id FROM chunks WHERE tenant_id = $1 AND doc_id = $2 ORDER BY seq
+"""
+
+_DELETE_CHUNK_VECTORS_SQL = """
+DELETE FROM chunk_vectors cv USING chunks c
+WHERE cv.chunk_id = c.chunk_id AND c.tenant_id = $1 AND c.doc_id = $2
+"""
+
+_DELETE_CHUNKS_SQL = """
+DELETE FROM chunks WHERE tenant_id = $1 AND doc_id = $2
+"""
+
+_DELETE_ANNOTATIONS_SQL = """
+DELETE FROM annotations WHERE tenant_id = $1 AND doc_id = $2
+"""
+
+_DELETE_ACL_DOC_SQL = """
+DELETE FROM acl_entries
+WHERE tenant_id = $1 AND object_type = 'document' AND object_id = $2
+"""
+
+_DELETE_DOCUMENT_SQL = """
+DELETE FROM documents WHERE tenant_id = $1 AND doc_id = $2
+"""
+
 _UPSERT_CHUNK_VECTOR_SQL = """
 INSERT INTO chunk_vectors
     (chunk_id, tenant_id, model_name, model_version, vector_store, collection, indexed_at)
@@ -121,6 +147,10 @@ class DocumentStore(Protocol):
     async def record_chunk_vectors(
         self, tenant_id: str, entries: Sequence[ChunkVectorEntry]
     ) -> None: ...
+
+    async def list_chunk_ids(self, tenant_id: str, doc_id: str) -> list[str]: ...
+
+    async def delete_document(self, tenant_id: str, doc_id: str) -> None: ...
 
 
 class PostgresDocumentStore:
@@ -218,6 +248,26 @@ class PostgresDocumentStore:
                 prepared.inheritance_broken,
                 prepared.source_id,
             )
+
+    async def list_chunk_ids(self, tenant_id: str, doc_id: str) -> list[str]:
+        conn = await asyncpg.connect(self._dsn)
+        try:
+            rows = await conn.fetch(_LIST_CHUNK_IDS_SQL, tenant_id, doc_id)
+        finally:
+            await conn.close()
+        return [str(row["chunk_id"]) for row in rows]
+
+    async def delete_document(self, tenant_id: str, doc_id: str) -> None:
+        conn = await asyncpg.connect(self._dsn)
+        try:
+            async with conn.transaction():
+                await conn.execute(_DELETE_CHUNK_VECTORS_SQL, tenant_id, doc_id)
+                await conn.execute(_DELETE_CHUNKS_SQL, tenant_id, doc_id)
+                await conn.execute(_DELETE_ANNOTATIONS_SQL, tenant_id, doc_id)
+                await conn.execute(_DELETE_ACL_DOC_SQL, tenant_id, doc_id)
+                await conn.execute(_DELETE_DOCUMENT_SQL, tenant_id, doc_id)
+        finally:
+            await conn.close()
 
     async def record_chunk_vectors(
         self, tenant_id: str, entries: Sequence[ChunkVectorEntry]

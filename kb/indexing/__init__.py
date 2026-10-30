@@ -1,5 +1,10 @@
 """索引流水线 —— 连接器数据落库、切分与 ACL 同步。"""
 
+from kb.indexing.deletion import (
+    CacheInvalidator,
+    DeletionResult,
+    DocumentDeletionService,
+)
 from kb.indexing.embedding import Embedder, HashingEmbedder
 from kb.indexing.ids import acl_id, chunk_id, document_id
 from kb.indexing.models import (
@@ -29,7 +34,10 @@ from kb.indexing.vector_store import (
 
 __all__ = [
     "TEXT_PARSER_VERSION",
+    "CacheInvalidator",
     "ChunkVectorEntry",
+    "DeletionResult",
+    "DocumentDeletionService",
     "DocumentStore",
     "Embedder",
     "HashingEmbedder",

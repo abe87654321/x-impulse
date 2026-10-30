@@ -129,3 +129,20 @@ class InMemoryStore:
     ) -> None:
         for entry in entries:
             self.chunk_vectors[entry.chunk_id] = entry
+
+    async def list_chunk_ids(self, tenant_id: str, doc_id: str) -> list[str]:
+        prepared = self.prepared.get(doc_id)
+        if prepared is None:
+            return []
+        return [chunk.chunk_id for chunk in prepared.chunks]
+
+    async def delete_document(self, tenant_id: str, doc_id: str) -> None:
+        self.prepared.pop(doc_id, None)
+        for key, document in list(self.documents.items()):
+            if document.doc_id == doc_id:
+                self.documents.pop(key, None)
+        for chunk_id, entry in list(self.chunk_vectors.items()):
+            if entry.chunk_id == chunk_id and chunk_id not in {
+                chunk.chunk_id for prepared in self.prepared.values() for chunk in prepared.chunks
+            }:
+                self.chunk_vectors.pop(chunk_id, None)
