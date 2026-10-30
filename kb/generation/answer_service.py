@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 from typing import Protocol
 
@@ -16,11 +17,12 @@ from kb.generation.citations import (
 )
 from kb.identity.permissions import DelegationContext
 from kb.retrieval.models import RetrievedChunk
+from kb.retrieval.pg_adapters import HybridRetrievalService
 from kb.retrieval.service import RetrievalService
 
 
 class EvidenceRetriever(Protocol):
-    def search(self, ctx: DelegationContext, query: str) -> Sequence[RetrievedChunk]: ...
+    async def search(self, ctx: DelegationContext, query: str) -> Sequence[RetrievedChunk]: ...
 
 
 class RetrievalServiceAdapter:
@@ -29,11 +31,17 @@ class RetrievalServiceAdapter:
     def __init__(self, service: RetrievalService) -> None:
         self._service = service
 
-    def search(self, ctx: DelegationContext, query: str) -> Sequence[RetrievedChunk]:
-        return [
-            RetrievedChunk(record=record, score=1.0)
-            for record in self._service.search_chunks(ctx, query)
-        ]
+    async def search(self, ctx: DelegationContext, query: str) -> Sequence[RetrievedChunk]:
+        records = await asyncio.to_thread(self._service.search_chunks, ctx, query)
+        return [RetrievedChunk(record=record, score=1.0) for record in records]
+
+
+class HybridRetrievalAdapter:
+    def __init__(self, service: HybridRetrievalService) -> None:
+        self._service = service
+
+    async def search(self, ctx: DelegationContext, query: str) -> Sequence[RetrievedChunk]:
+        return await self._service.retrieve(ctx, query)
 
 
 class AnswerService:
@@ -49,7 +57,7 @@ class AnswerService:
         self._refusal_text = refusal_text
 
     async def answer(self, ctx: DelegationContext, question: str) -> Answer:
-        evidence = self._retriever.search(ctx, question)
+        evidence = await self._retriever.search(ctx, question)
         binder = CitationBinder(evidence, refusal_text=self._refusal_text)
         if not evidence:
             return binder.bind("")
@@ -57,4 +65,9 @@ class AnswerService:
         return binder.bind(raw)
 
 
-__all__ = ["AnswerService", "EvidenceRetriever", "RetrievalServiceAdapter"]
+__all__ = [
+    "AnswerService",
+    "EvidenceRetriever",
+    "HybridRetrievalAdapter",
+    "RetrievalServiceAdapter",
+]

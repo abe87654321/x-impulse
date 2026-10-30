@@ -21,7 +21,7 @@ class _Retriever:
         self.evidence = evidence
         self.calls = 0
 
-    def search(self, ctx: DelegationContext, query: str) -> Sequence[RetrievedChunk]:
+    async def search(self, ctx: DelegationContext, query: str) -> Sequence[RetrievedChunk]:
         self.calls += 1
         return self.evidence
 

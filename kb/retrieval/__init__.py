@@ -11,6 +11,13 @@ from kb.retrieval.models import (
     RetrievedChunk,
     ScoredChunk,
 )
+from kb.retrieval.pg_adapters import (
+    HybridRecallBackend,
+    HybridRetrievalService,
+    PgChunkRepository,
+    TenantAclRepository,
+    load_audience_allowlist,
+)
 from kb.retrieval.retriever import (
     AclPermissionChecker,
     AclRepository,
@@ -27,8 +34,11 @@ __all__ = [
     "ChunkRecord",
     "ChunkRepository",
     "HybridRecall",
+    "HybridRecallBackend",
+    "HybridRetrievalService",
     "InMemoryQueryCache",
     "MetadataFilter",
+    "PgChunkRepository",
     "PermissionChecker",
     "QueryCache",
     "RecallBackend",
@@ -37,7 +47,9 @@ __all__ = [
     "RetrievedChunk",
     "Retriever",
     "ScoredChunk",
+    "TenantAclRepository",
     "fuse",
+    "load_audience_allowlist",
     "make_cache_key",
     "rrf_fuse",
     "weighted_fuse",
