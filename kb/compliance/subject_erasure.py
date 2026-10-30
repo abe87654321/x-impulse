@@ -4,7 +4,8 @@
 - chunk / vector / cache：命中主体索引或含明文标识的 chunk 直接硬删
 - session / answer / curated_qa：按提供的明文标识做字面替换（[已依法删除]）
 - eval_case：命中即删除
-- raw_object / audit / backup：SKIPPED（与文档级删除相同的未接入基础设施）
+- raw_object：SKIPPED（未配置对象存储）
+- audit / backup：有主体 DEK 时销毁并记录（软件 KEK，生产需 KMS）；加密写入与备份轮转未验证
 
 召回上限 = PII 识别召回率 + 兜底字面检索命中率，无法宣称 100%（设计 §4.2）。
 """
@@ -18,10 +19,12 @@ from datetime import UTC, datetime, timedelta
 
 import asyncpg
 
+from kb.compliance.crypto import KeyManager
 from kb.compliance.erasure import (
     ErasureResult,
     LocationOutcome,
     PostgresErasureRepository,
+    ScopeStatus,
     _rowcount,
 )
 from kb.compliance.pii import DetectedPII, subject_key
@@ -60,6 +63,7 @@ class SubjectErasureService:
         collection: str = "kb_chunks",
         retention_days: int = 15,
         dsn: str | None = None,
+        key_manager: KeyManager | None = None,
     ) -> None:
         if not pepper:
             raise ValueError("pepper 不能为空")
@@ -73,6 +77,7 @@ class SubjectErasureService:
         self._collection = collection
         self._retention_days = retention_days
         self._dsn = dsn or dsn_from_env()
+        self._key_manager = key_manager
 
     async def erase_subject(
         self,
@@ -109,7 +114,7 @@ class SubjectErasureService:
             chunk_ids.update(await self._chunks_containing(tenant_id, literals))
         chunk_list = sorted(chunk_ids)
 
-        outcomes = await self._execute_locations(tenant_id, request_id, chunk_list, literals)
+        outcomes = await self._execute_locations(tenant_id, request_id, chunk_list, literals, keys)
         for outcome in outcomes:
             await self._repo.record_scope(tenant_id, request_id, outcome)
 
@@ -138,6 +143,7 @@ class SubjectErasureService:
         request_id: str,
         chunk_ids: list[str],
         literals: list[str],
+        keys: list[str],
     ) -> list[LocationOutcome]:
         outcomes: list[LocationOutcome] = [
             LocationOutcome("raw_object", request_id, "purge", "SKIPPED", "未配置对象存储")
@@ -199,23 +205,20 @@ class SubjectErasureService:
                 "redact",
             )
         )
+        destroyed = await self._destroy_keys(tenant_id, keys)
+        if destroyed:
+            key_status: ScopeStatus = "LOGICAL_DONE"
+            audit_detail = "DEK 已销毁（软件 KEK；生产需 KMS，审计加密写入未验证）"
+            backup_detail = "DEK 已销毁；备份轮转未验证"
+        else:
+            key_status = "SKIPPED"
+            audit_detail = "该主体无 DEK 记录或未接入 KMS"
+            backup_detail = "该主体无 DEK 记录或未接入备份密钥销毁"
         outcomes.append(
-            LocationOutcome(
-                "audit",
-                request_id,
-                "crypto_shred",
-                "SKIPPED",
-                "未接入 KMS/主体级 DEK",
-            )
+            LocationOutcome("audit", request_id, "crypto_shred", key_status, audit_detail)
         )
         outcomes.append(
-            LocationOutcome(
-                "backup",
-                request_id,
-                "crypto_shred",
-                "SKIPPED",
-                "未接入备份介质与密钥销毁",
-            )
+            LocationOutcome("backup", request_id, "crypto_shred", key_status, backup_detail)
         )
         outcomes.append(
             self._redaction_outcome(
@@ -247,6 +250,15 @@ class SubjectErasureService:
         return LocationOutcome(
             location_type, request_id, action, "PHYSICAL_DONE", f"脱敏 {count} 行"
         )
+
+    async def _destroy_keys(self, tenant_id: str, keys: list[str]) -> bool:
+        if self._key_manager is None:
+            return False
+        destroyed = False
+        for key in keys:
+            if await self._key_manager.destroy(tenant_id, key, "PIPL-47-subject-erasure"):
+                destroyed = True
+        return destroyed
 
     async def _chunks_containing(self, tenant_id: str, literals: list[str]) -> set[str]:
         rows = await self._fetch(_CHUNK_LITERAL_SQL, tenant_id, literals)
@@ -348,7 +360,10 @@ class SubjectErasureService:
         )
         skipped = [o for o in outcomes if o.status == "SKIPPED"]
         uncovered = "未覆盖位置：" + "；".join(f"{o.location_type}（{o.detail}）" for o in skipped)
-        uncovered += "；PII 召回上限受识别模型限制，另含兜底字面检索"
+        uncovered += (
+            "；PII 召回上限受识别模型限制，另含兜底字面检索"
+            "；加密擦除使用软件 KEK，审计加密写入与备份轮转尚未验证，生产须接 KMS"
+        )
         method = (
             "主体标识归一化后 HMAC 精确匹配 subject_index；"
             "并以明文标识做兜底全文检索；会话/答案/精选问答字面脱敏，评测集命中即删。"

@@ -1,5 +1,11 @@
 """compliance —— 数据主体权利与贯穿式删除。"""
 
+from kb.compliance.crypto import (
+    KeyDestroyedError,
+    KeyManager,
+    SoftwareKeyManager,
+    kek_from_passphrase,
+)
 from kb.compliance.erasure import (
     DocumentErasureService,
     ErasureRepository,
@@ -13,6 +19,10 @@ from kb.compliance.subject_erasure import SubjectErasureService
 from kb.compliance.subject_index import PostgresSubjectIndexer
 
 __all__ = [
+    "KeyDestroyedError",
+    "KeyManager",
+    "SoftwareKeyManager",
+    "kek_from_passphrase",
     "DetectedPII",
     "PostgresSubjectIndexer",
     "SubjectErasureService",

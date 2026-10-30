@@ -7,6 +7,7 @@ import json
 
 import pytest
 
+from kb.compliance.crypto import KeyDestroyedError, SoftwareKeyManager, kek_from_passphrase
 from kb.compliance.pii import detect_pii, subject_key
 from kb.compliance.subject_erasure import SubjectErasureService
 from kb.compliance.subject_index import PostgresSubjectIndexer
@@ -47,6 +48,7 @@ def _cleanup() -> None:
     db.execute(
         "DELETE FROM subject_index WHERE tenant_id = $1 AND subject_key = $2", TENANT, _key()
     )
+    db.execute("DELETE FROM subject_keys WHERE tenant_id = $1 AND subject_key = $2", TENANT, _key())
     db.execute("DELETE FROM erasure_certificates WHERE tenant_id = $1", TENANT)
     db.execute("DELETE FROM erasure_scopes WHERE tenant_id = $1", TENANT)
     db.execute("DELETE FROM erasure_requests WHERE tenant_id = $1", TENANT)
@@ -170,8 +172,17 @@ def test_subject_erasure_removes_chunks_and_redacts_texts():
 
         cache = InMemoryQueryCache()
         cache.put("q", chunk_ids)
+        key_manager = SoftwareKeyManager(kek_from_passphrase("test-kek"))
+        asyncio.run(key_manager.register(TENANT, _key()))
+        ciphertext = asyncio.run(key_manager.encrypt(TENANT, _key(), f"secret {PHONE}"))
         service = SubjectErasureService(
-            store, vectors, cache, indexer, pepper=PEPPER, collection=COLLECTION
+            store,
+            vectors,
+            cache,
+            indexer,
+            pepper=PEPPER,
+            collection=COLLECTION,
+            key_manager=key_manager,
         )
         result = asyncio.run(
             service.erase_subject(
@@ -183,6 +194,17 @@ def test_subject_erasure_removes_chunks_and_redacts_texts():
         )
 
         assert result.state == "CLOSED"
+        statuses = {o.location_type: o.status for o in result.outcomes}
+        assert statuses["audit"] == "LOGICAL_DONE"
+        assert statuses["backup"] == "LOGICAL_DONE"
+        destroyed = db.fetch(
+            "SELECT destroyed_at FROM subject_keys WHERE tenant_id = $1 AND subject_key = $2",
+            TENANT,
+            _key(),
+        )
+        assert destroyed and destroyed[0]["destroyed_at"] is not None
+        with pytest.raises(KeyDestroyedError):
+            asyncio.run(key_manager.decrypt(TENANT, _key(), ciphertext))
         assert db.fetch("SELECT 1 FROM chunks WHERE doc_id = $1", DOC) == []
         assert cache.get("q") is None
         assert (
