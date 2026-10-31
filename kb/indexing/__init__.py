@@ -22,6 +22,12 @@ from kb.indexing.models import (
 )
 from kb.indexing.parser import TEXT_PARSER_VERSION, Parser, TextParser
 from kb.indexing.pipeline import IndexingPipeline
+from kb.indexing.raw_store import (
+    InMemoryRawObjectStore,
+    RawObjectStore,
+    S3RawObjectStore,
+    build_raw_store_from_env,
+)
 from kb.indexing.store import DocumentStore, PostgresDocumentStore
 from kb.indexing.suppression import (
     InMemorySuppressionChecker,
@@ -55,6 +61,7 @@ __all__ = [
     "Embedder",
     "EmbeddingConfigError",
     "HashingEmbedder",
+    "InMemoryRawObjectStore",
     "InMemorySuppressionChecker",
     "InMemoryVectorStore",
     "IndexingPipeline",
@@ -66,6 +73,8 @@ __all__ = [
     "PostgresSuppressionChecker",
     "PreparedChunk",
     "PreparedDocument",
+    "RawObjectStore",
+    "S3RawObjectStore",
     "SentenceTransformerEmbedder",
     "SourceSyncService",
     "StoredDocument",
@@ -81,6 +90,7 @@ __all__ = [
     "VectorStore",
     "acl_id",
     "build_embedder_from_env",
+    "build_raw_store_from_env",
     "chunk_id",
     "document_id",
 ]

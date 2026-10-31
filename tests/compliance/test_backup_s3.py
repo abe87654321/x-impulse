@@ -14,6 +14,7 @@ from kb.compliance.backup_s3 import (
     S3BackupCatalog,
     S3NotFoundError,
     S3ObjectSummary,
+    _parse_versions,
     build_s3_transport_from_env,
     sign_v4_request,
 )
@@ -188,3 +189,23 @@ def test_sigv4_matches_aws_documented_example():
         "SignedHeaders=host;range;x-amz-content-sha256;x-amz-date, "
         "Signature=f0e8bdb87c964420e857bd35b5d6ed310bd44f0170aba48dd91039c6036bdb41"
     )
+
+
+def test_parse_versions_includes_delete_markers_and_pagination():
+    raw = b"""<ListVersionsResult>
+      <Version><Key>kb/t1/b1/data</Key><VersionId>v1</VersionId></Version>
+      <DeleteMarker><Key>kb/t1/b1/old</Key><VersionId>v2</VersionId></DeleteMarker>
+      <IsTruncated>true</IsTruncated>
+      <NextKeyMarker>kb/t1/b1/data</NextKeyMarker>
+      <NextVersionIdMarker>v1</NextVersionIdMarker>
+    </ListVersionsResult>"""
+
+    versions, truncated, key_marker, version_marker = _parse_versions(raw)
+
+    assert versions == [
+        ("kb/t1/b1/data", "v1"),
+        ("kb/t1/b1/old", "v2"),
+    ]
+    assert truncated is True
+    assert key_marker == "kb/t1/b1/data"
+    assert version_marker == "v1"

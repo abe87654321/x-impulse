@@ -21,6 +21,7 @@ from typing import Literal
 import asyncpg
 
 from kb.audit.writer import AuditEvent, AuditStore
+from kb.compliance.subject_index import SubjectIndexer
 from kb.database import dsn_from_env
 from kb.generation.answer_service import AnswerService
 from kb.generation.citations import DEFAULT_REFUSAL, Answer, BoundSentence, Citation
@@ -90,6 +91,7 @@ class ChatService:
         dsn: str | None = None,
         rate_limiter: RateLimiter | None = None,
         meter: UsageMeter | None = None,
+        subject_indexer: SubjectIndexer | None = None,
     ) -> None:
         self._answers = answers
         self._audit = audit
@@ -98,6 +100,7 @@ class ChatService:
         self._dsn = dsn or dsn_from_env()
         self._limiter = rate_limiter or RateLimiter(audit=audit)
         self._meter: UsageMeter = meter or InMemoryUsageMeter()
+        self._subject_indexer = subject_indexer
 
     async def ask(
         self,
@@ -130,6 +133,7 @@ class ChatService:
         await self._persist_answer(
             tenant_id, query_id, answer_id, result.answer, latency_ms, ttft_ms=None
         )
+        await self._index_answer(tenant_id, answer_id, result.answer)
         self._record_usage(ctx, tenant_id, result.answer)
         await self._audit_events(
             ctx, tenant_id, question, session, query_id, answer_id, result.answer
@@ -208,6 +212,7 @@ class ChatService:
         await self._persist_answer(
             tenant_id, query_id, answer_id, answer, latency_ms, ttft_ms=ttft_ms
         )
+        await self._index_answer(tenant_id, answer_id, answer)
         self._record_usage(ctx, tenant_id, answer)
         await self._audit_events(ctx, tenant_id, question, session, query_id, answer_id, answer)
         yield ChatStreamEvent(
@@ -218,6 +223,11 @@ class ChatService:
             refused=answer.refused,
             citations=answer.citations,
         )
+
+    async def _index_answer(self, tenant_id: str, answer_id: str, answer: Answer) -> None:
+        if self._subject_indexer is None:
+            return
+        await self._subject_indexer.index_location(tenant_id, "answer", answer_id, answer.text)
 
     async def _begin_query(
         self,

@@ -2,10 +2,14 @@
 
 覆盖范围（诚实说明）：
 - chunk / vector / cache：命中主体索引或含明文标识的 chunk 直接硬删
-- session / answer / curated_qa：按提供的明文标识做字面替换（[已依法删除]）
-- eval_case：命中即删除
+- session / answer / curated_qa：优先按 subject_index 定位，重新识别并按主体
+  HMAC 脱敏；未命中再按提供的明文标识做字面替换（[已依法删除]）
+- eval_case：优先按 subject_index 删除，未命中再按明文标识兜底
 - raw_object：SKIPPED（未配置对象存储）
 - audit / backup：有主体 DEK 时销毁并记录（软件 KEK，生产需 KMS）；加密写入与备份轮转未验证
+
+索引写入现状：chunk 由索引流水线写入；answer 由 ChatService 写入；
+session / curated_qa / eval_case 的写入路径尚未实现，当前仍依赖明文兜底检索。
 
 召回上限 = PII 识别召回率 + 兜底字面检索命中率，无法宣称 100%（设计 §4.2）。
 """
@@ -28,7 +32,7 @@ from kb.compliance.erasure import (
     ScopeStatus,
     _rowcount,
 )
-from kb.compliance.pii import DetectedPII, subject_key
+from kb.compliance.pii import DetectedPII, detect_pii, subject_key
 from kb.compliance.subject_index import PostgresSubjectIndexer
 from kb.database import dsn_from_env
 from kb.indexing.deletion import CacheInvalidator
@@ -48,6 +52,19 @@ WHERE tenant_id = $1 AND EXISTS (
 _SET_SUBJECT_SQL = """
 UPDATE erasure_requests SET subject_key = $2 WHERE request_id = $1
 """
+
+
+def _optional_text(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _redact_text(text: str, keys: list[str], pepper: str) -> str:
+    """按主体 HMAC 重新识别并替换，避免依赖调用方给出的原文写法。"""
+    key_set = set(keys)
+    for item in detect_pii(text):
+        if subject_key(item.normalized, pepper) in key_set:
+            text = text.replace(item.value, _REDACT)
+    return text
 
 
 class SubjectErasureService:
@@ -117,7 +134,9 @@ class SubjectErasureService:
             chunk_ids.update(await self._chunks_containing(tenant_id, literals))
         chunk_list = sorted(chunk_ids)
 
-        outcomes = await self._execute_locations(tenant_id, request_id, chunk_list, literals, keys)
+        outcomes = await self._execute_locations(
+            tenant_id, request_id, chunk_list, literals, keys, indexed
+        )
         for outcome in outcomes:
             await self._repo.record_scope(tenant_id, request_id, outcome)
 
@@ -125,6 +144,17 @@ class SubjectErasureService:
             await self._repo.put_suppression(tenant_id, "subject", key, reason)
         if chunk_list:
             await self._subject_index.delete_chunk_locations(tenant_id, chunk_list)
+        succeeded = {
+            outcome.location_type
+            for outcome in outcomes
+            if outcome.status in ("PHYSICAL_DONE", "LOGICAL_DONE")
+        }
+        indexed_non_chunk = [
+            (location_type, location_id)
+            for location_type, location_id in indexed
+            if location_type != "chunk" and location_type in succeeded
+        ]
+        await self._subject_index.delete_locations(tenant_id, indexed_non_chunk)
 
         failed = [o for o in outcomes if o.status == "FAILED"]
         state = "PARTIAL_FAILED" if failed else "CLOSED"
@@ -147,7 +177,11 @@ class SubjectErasureService:
         chunk_ids: list[str],
         literals: list[str],
         keys: list[str],
+        indexed: list[tuple[str, str]],
     ) -> list[LocationOutcome]:
+        by_type: dict[str, set[str]] = {}
+        for location_type, location_id in indexed:
+            by_type.setdefault(location_type, set()).add(location_id)
         outcomes: list[LocationOutcome] = [
             LocationOutcome("raw_object", request_id, "purge", "SKIPPED", "未配置对象存储")
         ]
@@ -196,7 +230,9 @@ class SubjectErasureService:
             self._redaction_outcome(
                 "session",
                 request_id,
-                await self._redact_sessions(tenant_id, literals),
+                await self._redact_sessions(
+                    tenant_id, literals, sorted(by_type.get("session", ())), keys
+                ),
                 "redact",
             )
         )
@@ -204,7 +240,9 @@ class SubjectErasureService:
             self._redaction_outcome(
                 "answer",
                 request_id,
-                await self._redact_answers(tenant_id, literals),
+                await self._redact_answers(
+                    tenant_id, literals, sorted(by_type.get("answer", ())), keys
+                ),
                 "redact",
             )
         )
@@ -232,12 +270,16 @@ class SubjectErasureService:
             self._redaction_outcome(
                 "curated_qa",
                 request_id,
-                await self._redact_curated(tenant_id, literals),
+                await self._redact_curated(
+                    tenant_id, literals, sorted(by_type.get("curated_qa", ())), keys
+                ),
                 "redact",
             )
         )
         try:
-            deleted = await self._delete_eval_cases(tenant_id, literals)
+            deleted = await self._delete_eval_cases(
+                tenant_id, literals, sorted(by_type.get("eval_case", ()))
+            )
             outcomes.append(
                 LocationOutcome(
                     "eval_case",
@@ -269,7 +311,7 @@ class SubjectErasureService:
             outcome = await self._backup.notify_erasure(
                 tenant_id, scope_type="subject", scope_key=key
             )
-            statuses.append(outcome.status)  # type: ignore[arg-type]
+            statuses.append(outcome.status)
             details.append(outcome.detail)
             if outcome.expires_at is not None:
                 expires.append(outcome.expires_at.date().isoformat())
@@ -297,8 +339,44 @@ class SubjectErasureService:
         rows = await self._fetch(_CHUNK_LITERAL_SQL, tenant_id, literals)
         return {str(row["chunk_id"]) for row in rows}
 
-    async def _redact_sessions(self, tenant_id: str, literals: list[str]) -> int:
+    async def _redact_sessions(
+        self,
+        tenant_id: str,
+        literals: list[str],
+        session_ids: list[str],
+        keys: list[str],
+    ) -> int:
         total = 0
+        if session_ids:
+            rows = await self._fetch(
+                """
+                SELECT query_id, raw_text, rewritten_text FROM queries
+                WHERE tenant_id = $1 AND session_id = ANY($2::text[])
+                  AND (raw_text IS NOT NULL OR rewritten_text IS NOT NULL)
+                """,
+                tenant_id,
+                session_ids,
+            )
+            for row in rows:
+                raw = _optional_text(row["raw_text"])
+                rewritten = _optional_text(row["rewritten_text"])
+                new_raw = _redact_text(raw, keys, self._pepper) if raw is not None else None
+                new_rewritten = (
+                    _redact_text(rewritten, keys, self._pepper) if rewritten is not None else None
+                )
+                if new_raw != raw or new_rewritten != rewritten:
+                    total += _rowcount(
+                        await self._execute(
+                            """
+                            UPDATE queries SET raw_text = $3, rewritten_text = $4
+                            WHERE tenant_id = $1 AND query_id = $2
+                            """,
+                            tenant_id,
+                            row["query_id"],
+                            new_raw,
+                            new_rewritten,
+                        )
+                    )
         for literal in literals:
             total += _rowcount(
                 await self._execute(
@@ -315,8 +393,33 @@ class SubjectErasureService:
             )
         return total
 
-    async def _redact_answers(self, tenant_id: str, literals: list[str]) -> int:
+    async def _redact_answers(
+        self,
+        tenant_id: str,
+        literals: list[str],
+        answer_ids: list[str],
+        keys: list[str],
+    ) -> int:
         total = 0
+        if answer_ids:
+            rows = await self._fetch(
+                "SELECT answer_id, text FROM answers "
+                "WHERE tenant_id = $1 AND answer_id = ANY($2::text[])",
+                tenant_id,
+                answer_ids,
+            )
+            for row in rows:
+                text = _optional_text(row["text"])
+                new_text = _redact_text(text, keys, self._pepper) if text is not None else text
+                if new_text != text:
+                    total += _rowcount(
+                        await self._execute(
+                            "UPDATE answers SET text = $3 WHERE tenant_id = $1 AND answer_id = $2",
+                            tenant_id,
+                            row["answer_id"],
+                            new_text,
+                        )
+                    )
         for literal in literals:
             total += _rowcount(
                 await self._execute(
@@ -331,8 +434,47 @@ class SubjectErasureService:
             )
         return total
 
-    async def _redact_curated(self, tenant_id: str, literals: list[str]) -> int:
+    async def _redact_curated(
+        self,
+        tenant_id: str,
+        literals: list[str],
+        qa_ids: list[str],
+        keys: list[str],
+    ) -> int:
         total = 0
+        if qa_ids:
+            rows = await self._fetch(
+                "SELECT qa_id, answer_text, question_pattern FROM curated_qa "
+                "WHERE tenant_id = $1 AND qa_id = ANY($2::text[])",
+                tenant_id,
+                qa_ids,
+            )
+            for row in rows:
+                answer_text = _optional_text(row["answer_text"])
+                question = _optional_text(row["question_pattern"])
+                new_answer = (
+                    _redact_text(answer_text, keys, self._pepper)
+                    if answer_text is not None
+                    else answer_text
+                )
+                new_question = (
+                    _redact_text(question, keys, self._pepper) if question is not None else question
+                )
+                if new_answer != answer_text or new_question != question:
+                    total += _rowcount(
+                        await self._execute(
+                            """
+                            UPDATE curated_qa
+                            SET answer_text = $3, question_pattern = $4,
+                                review_state = 'needs_review'
+                            WHERE tenant_id = $1 AND qa_id = $2
+                            """,
+                            tenant_id,
+                            row["qa_id"],
+                            new_answer,
+                            new_question,
+                        )
+                    )
         for literal in literals:
             total += _rowcount(
                 await self._execute(
@@ -352,8 +494,18 @@ class SubjectErasureService:
             )
         return total
 
-    async def _delete_eval_cases(self, tenant_id: str, literals: list[str]) -> int:
+    async def _delete_eval_cases(
+        self, tenant_id: str, literals: list[str], case_ids: list[str]
+    ) -> int:
         total = 0
+        if case_ids:
+            total += _rowcount(
+                await self._execute(
+                    "DELETE FROM eval_cases WHERE tenant_id = $1 AND case_id = ANY($2::text[])",
+                    tenant_id,
+                    case_ids,
+                )
+            )
         for literal in literals:
             total += _rowcount(
                 await self._execute(
@@ -399,7 +551,8 @@ class SubjectErasureService:
         )
         method = (
             "主体标识归一化后 HMAC 精确匹配 subject_index；"
-            "并以明文标识做兜底全文检索；会话/答案/精选问答字面脱敏，评测集命中即删。"
+            "命中位置按主体重新识别并脱敏（会话/答案/精选问答），评测集命中即删；"
+            "未命中再以明文标识做兜底全文检索。"
         )
         cert_hash = hashlib.sha256(
             f"{request_id}\x00{summary}\x00{method}\x00{uncovered}".encode()

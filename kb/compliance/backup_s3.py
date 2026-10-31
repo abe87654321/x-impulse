@@ -63,7 +63,13 @@ class S3Transport(Protocol):
 
     async def get_object(self, bucket: str, key: str) -> bytes: ...
 
+    async def put_object(
+        self, bucket: str, key: str, data: bytes, *, content_type: str | None = None
+    ) -> None: ...
+
     async def delete_objects(self, bucket: str, keys: Sequence[str]) -> int: ...
+
+    async def delete_prefix(self, bucket: str, prefix: str) -> int: ...
 
 
 class S3BackupCatalog:
@@ -171,6 +177,69 @@ class UrllibS3Transport:
 
     async def get_object(self, bucket: str, key: str) -> bytes:
         return await self._request("GET", bucket, key)
+
+    async def put_object(
+        self, bucket: str, key: str, data: bytes, *, content_type: str | None = None
+    ) -> None:
+        await self._request(
+            "PUT",
+            bucket,
+            key,
+            body=data,
+            content_type=content_type or "application/octet-stream",
+        )
+
+    async def delete_prefix(self, bucket: str, prefix: str) -> int:
+        """删除前缀下所有对象，包含版本历史（S3 版本控制陷阱）。"""
+        versions: list[tuple[str, str]] = []
+        key_marker: str | None = None
+        version_marker: str | None = None
+        while True:
+            query: dict[str, str] = {"versions": "", "prefix": prefix}
+            if key_marker:
+                query["key-marker"] = key_marker
+            if version_marker:
+                query["version-id-marker"] = version_marker
+            raw = await self._request("GET", bucket, "", query=query)
+            page, truncated, key_marker, version_marker = _parse_versions(raw)
+            versions.extend(page)
+            if not truncated:
+                break
+        if versions:
+            deleted = 0
+            for start in range(0, len(versions), 1000):
+                deleted += await self._delete_versions(bucket, versions[start : start + 1000])
+            return deleted
+
+        keys: list[str] = []
+        token: str | None = None
+        while True:
+            objects, _common, token = await self.list_objects(
+                bucket, prefix=prefix, continuation_token=token
+            )
+            keys.extend(item.key for item in objects)
+            if not token:
+                break
+        deleted = 0
+        for start in range(0, len(keys), 1000):
+            deleted += await self.delete_objects(bucket, keys[start : start + 1000])
+        return deleted
+
+    async def _delete_versions(self, bucket: str, versions: Sequence[tuple[str, str]]) -> int:
+        body = _delete_versions_xml(versions)
+        payload = await self._request(
+            "POST",
+            bucket,
+            "",
+            query={"delete": ""},
+            body=body,
+            content_type="application/xml",
+            content_md5=base64.b64encode(hashlib.md5(body).digest()).decode("ascii"),  # noqa: S324
+        )
+        deleted, errors = _parse_delete_result(payload)
+        if errors:
+            raise S3TransportError(f"S3 删除版本部分失败：{'; '.join(errors)}")
+        return deleted
 
     async def delete_objects(self, bucket: str, keys: Sequence[str]) -> int:
         if not keys:
@@ -422,6 +491,39 @@ def _parse_delete_result(raw: bytes) -> tuple[int, list[str]]:
 def _delete_xml(keys: Sequence[str]) -> bytes:
     objects = "".join(f"<Object><Key>{_xml_escape(key)}</Key></Object>" for key in keys)
     return f"<Delete><Quiet>false</Quiet>{objects}</Delete>".encode()
+
+
+def _delete_versions_xml(versions: Sequence[tuple[str, str]]) -> bytes:
+    objects = "".join(
+        f"<Object><Key>{_xml_escape(key)}</Key>"
+        f"<VersionId>{_xml_escape(version)}</VersionId></Object>"
+        for key, version in versions
+    )
+    return f"<Delete><Quiet>false</Quiet>{objects}</Delete>".encode()
+
+
+def _parse_versions(
+    raw: bytes,
+) -> tuple[list[tuple[str, str]], bool, str | None, str | None]:
+    try:
+        root = ET.fromstring(raw)  # noqa: S314 - 响应来自部署层配置的 S3 端点
+    except ET.ParseError as exc:
+        raise S3TransportError("S3 版本列表响应不是合法 XML") from exc
+    versions: list[tuple[str, str]] = []
+    for node in root:
+        if _local(node.tag) not in {"Version", "DeleteMarker"}:
+            continue
+        key = _child_text(node, "Key")
+        version = _child_text(node, "VersionId")
+        if key is not None and version is not None:
+            versions.append((key, version))
+    truncated = (_child_text(root, "IsTruncated") or "").lower() == "true"
+    return (
+        versions,
+        truncated,
+        _child_text(root, "NextKeyMarker"),
+        _child_text(root, "NextVersionIdMarker"),
+    )
 
 
 def _xml_escape(value: str) -> str:

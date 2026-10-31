@@ -11,6 +11,8 @@ import pytest
 
 from kb.api.chat_service import ChatService
 from kb.audit.writer import PostgresAuditStore
+from kb.compliance.pii import subject_key
+from kb.compliance.subject_index import PostgresSubjectIndexer
 from kb.database import Database
 from kb.generation.answer_service import AnswerResult, PreparedStream
 from kb.generation.citations import Answer, BoundSentence, Citation, StreamEvent
@@ -21,6 +23,8 @@ from tests.retrieval.fakes import make_record
 pytestmark = pytest.mark.integration
 
 TENANT = "t_api_it"
+PHONE = "13800138000"
+INDEX_PEPPER = "chat-index-pepper"
 
 
 def _citation() -> Citation:
@@ -95,6 +99,7 @@ def _cleanup() -> None:
     db.execute("DELETE FROM answers WHERE tenant_id = $1", TENANT)
     db.execute("DELETE FROM queries WHERE tenant_id = $1", TENANT)
     db.execute("DELETE FROM sessions WHERE tenant_id = $1", TENANT)
+    db.execute("DELETE FROM subject_index WHERE tenant_id = $1", TENANT)
     db.execute("DELETE FROM chunks WHERE tenant_id = $1", TENANT)
     db.execute("DELETE FROM documents WHERE tenant_id = $1", TENANT)
     db.execute("DELETE FROM sources WHERE tenant_id = $1", TENANT)
@@ -212,5 +217,40 @@ def test_chat_stream_persists_answer_and_ttft():
         assert answer["ttft_ms"] is not None
         citations = db.fetch("SELECT chunk_id FROM citations WHERE answer_id = $1", answer_id)
         assert citations == [{"chunk_id": "chk_api"}]
+    finally:
+        _cleanup()
+
+
+def _pii_answer() -> Answer:
+    citation = _citation()
+    sentence = BoundSentence(sentence_index=0, text=f"电话 {PHONE}。", citations=(citation,))
+    return Answer(
+        text=f"电话 {PHONE}。",
+        sentences=(sentence,),
+        citations=(citation,),
+        refused=False,
+        refusal_reason=None,
+    )
+
+
+class _PiiAnswers(_Answers):
+    async def answer_with_evidence(self, ctx, question):  # noqa: ANN001, ANN201
+        return AnswerResult(answer=_pii_answer(), evidence=_evidence())
+
+
+def test_chat_indexes_answer_text_for_subject_deletion():
+    _cleanup()
+    Database().execute(
+        "INSERT INTO tenants (tenant_id, display_name) VALUES ($1,'api-test')", TENANT
+    )
+    _seed_chunk()
+    try:
+        indexer = PostgresSubjectIndexer(INDEX_PEPPER)
+        service = ChatService(_PiiAnswers(), subject_indexer=indexer)
+
+        result = asyncio.run(service.ask(_ctx(), TENANT, "联系方式？", session_id="sess_pii"))
+
+        locations = asyncio.run(indexer.locations(TENANT, [subject_key(PHONE, INDEX_PEPPER)]))
+        assert ("answer", result.answer_id) in locations
     finally:
         _cleanup()

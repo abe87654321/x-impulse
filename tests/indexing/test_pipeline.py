@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from kb.indexing.ids import document_id
 from kb.indexing.pipeline import IndexingPipeline
+from kb.indexing.raw_store import InMemoryRawObjectStore
 from kb.indexing.suppression import InMemorySuppressionChecker, document_scope_key
 from kb.parsing.chunking import ChunkingConfig, chunk_document
 from kb.parsing.normalize import content_hash, normalize
@@ -13,7 +14,7 @@ TENANT = "default"
 SOURCE = "src_test"
 
 
-def _pipeline(connector, store, *, suppression=None) -> IndexingPipeline:
+def _pipeline(connector, store, *, suppression=None, raw_store=None) -> IndexingPipeline:
     return IndexingPipeline(
         connector,
         store,
@@ -21,6 +22,7 @@ def _pipeline(connector, store, *, suppression=None) -> IndexingPipeline:
         source_id=SOURCE,
         chunking=ChunkingConfig(target_tokens=20, max_tokens=30, min_tokens=5, overlap_ratio=0.0),
         suppression=suppression,
+        raw_store=raw_store,
     )
 
 
@@ -130,3 +132,18 @@ async def test_empty_acl_is_persisted_as_default_deny():
 
     prepared = store.prepared[document_id(SOURCE, "ext-1")]
     assert prepared.acl_entries == ()
+
+
+async def test_indexed_document_is_written_to_raw_store():
+    store = InMemoryStore()
+    raw_store = InMemoryRawObjectStore()
+    pipeline = _pipeline(
+        FakeConnector([FakeDoc("ext-raw", "原文内容。")]), store, raw_store=raw_store
+    )
+
+    await pipeline.run()
+
+    prepared = store.prepared[document_id(SOURCE, "ext-raw")]
+    assert (
+        await raw_store.get(TENANT, prepared.doc_id, prepared.content_hash) == "原文内容。".encode()
+    )

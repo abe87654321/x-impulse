@@ -18,6 +18,7 @@ from kb.database import Database
 from kb.indexing.embedding import HashingEmbedder
 from kb.indexing.ids import document_id
 from kb.indexing.pipeline import IndexingPipeline
+from kb.indexing.raw_store import InMemoryRawObjectStore
 from kb.indexing.store import PostgresDocumentStore
 from kb.indexing.vector_index import VectorIndexer
 from kb.indexing.vector_store import InMemoryVectorStore
@@ -184,6 +185,9 @@ def test_document_erasure_covers_ten_locations_and_is_idempotent():
 
         cache = InMemoryQueryCache()
         cache.put("q", chunk_ids)
+        raw_store = InMemoryRawObjectStore()
+        raw_hash = "raw-hash"
+        asyncio.run(raw_store.put(TENANT, DOC, raw_hash, b"original"))
         service = DocumentErasureService(
             PostgresErasureRepository(),
             store,
@@ -192,6 +196,7 @@ def test_document_erasure_covers_ten_locations_and_is_idempotent():
             scope_key_hasher=_hasher,
             collection=COLLECTION,
             backup=TrackingBackupRotation(rotation_days=90),
+            raw_store=raw_store,
         )
         result = asyncio.run(
             service.erase_document(TENANT, DOC, executor_id="ops", reviewer_id="compliance")
@@ -207,7 +212,8 @@ def test_document_erasure_covers_ten_locations_and_is_idempotent():
         assert statuses["eval_case"] == "PHYSICAL_DONE"
         assert statuses["audit"] == "SKIPPED"
         assert statuses["backup"] == "LOGICAL_DONE"
-        assert statuses["raw_object"] == "SKIPPED"
+        assert statuses["raw_object"] == "PHYSICAL_DONE"
+        assert asyncio.run(raw_store.get(TENANT, DOC, raw_hash)) is None
 
         db = Database()
         assert db.fetch("SELECT 1 FROM documents WHERE doc_id = $1", DOC) == []

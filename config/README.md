@@ -84,3 +84,21 @@ s3://<bucket>/<prefix>/<tenant_id>/<backup_id>/<其它数据对象...>
   `KB_S3_SESSION_TOKEN`），设置表只存 `catalog_credential_ref` 引用名。
 - `expire` 是真实的 `DeleteObjects`；若希望由桶生命周期而非应用删除，
   不要把 `s3_api` 配上自动轮转。删除后仍须保留 A-19 的诚实表述。
+
+## 原文对象存储（可选）
+
+设置 `KB_RAW_OBJECT_STORE=s3` 后，索引流水线会把原文写到
+`<prefix>/<tenant_id>/<doc_id>/<content_hash>`，文档级删除会按文档前缀
+删除对象及其版本历史。需要：
+
+```
+KB_RAW_OBJECT_STORE=s3
+KB_RAW_OBJECT_BUCKET=<bucket>
+KB_RAW_OBJECT_PREFIX=raw           # 可选
+KB_S3_ENDPOINT=https://...
+KB_S3_ACCESS_KEY_ID=...
+KB_S3_SECRET_ACCESS_KEY=...
+```
+
+不配置 `KB_RAW_OBJECT_STORE`（或设为 `none`）时删除证明的 `raw_object`
+保持 SKIPPED，不会假装已清理。

@@ -27,6 +27,7 @@ from kb.compliance.backup import BackupRotation, UnconfiguredBackupRotation
 from kb.compliance.restriction import RestrictionService
 from kb.database import dsn_from_env
 from kb.indexing.deletion import CacheInvalidator
+from kb.indexing.raw_store import RawObjectStore
 from kb.indexing.store import DocumentStore
 from kb.indexing.suppression import document_scope_key
 from kb.indexing.vector_store import VectorStore
@@ -307,6 +308,7 @@ class DocumentErasureService:
         retention_days: int = 15,
         restrictions: RestrictionService | None = None,
         backup: BackupRotation | None = None,
+        raw_store: RawObjectStore | None = None,
     ) -> None:
         self._repo = repository
         self._store = store
@@ -317,6 +319,7 @@ class DocumentErasureService:
         self._retention_days = retention_days
         self._restrictions = restrictions
         self._backup: BackupRotation = backup or UnconfiguredBackupRotation()
+        self._raw_store = raw_store
 
     async def erase_document(
         self,
@@ -405,16 +408,35 @@ class DocumentErasureService:
     ) -> list[LocationOutcome]:
         outcomes: list[LocationOutcome] = []
 
-        # 1. 原文缓存：项目尚无对象存储
-        outcomes.append(
-            LocationOutcome(
-                "raw_object",
-                doc_id,
-                _ACTIONS["raw_object"],
-                "SKIPPED",
-                "未配置对象存储",
+        # 1. 原文缓存：配置了对象存储才执行
+        if self._raw_store is None:
+            outcomes.append(
+                LocationOutcome(
+                    "raw_object",
+                    doc_id,
+                    _ACTIONS["raw_object"],
+                    "SKIPPED",
+                    "未配置对象存储",
+                )
             )
-        )
+        else:
+            try:
+                deleted_raw = await self._raw_store.delete_document(tenant_id, doc_id)
+                outcomes.append(
+                    LocationOutcome(
+                        "raw_object",
+                        doc_id,
+                        _ACTIONS["raw_object"],
+                        "PHYSICAL_DONE",
+                        f"删除 {deleted_raw} 个原文对象（含版本）",
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                outcomes.append(
+                    LocationOutcome(
+                        "raw_object", doc_id, _ACTIONS["raw_object"], "FAILED", str(exc)
+                    )
+                )
 
         # 4. 检索缓存：先切断可达性
         for chunk_id in chunk_ids:

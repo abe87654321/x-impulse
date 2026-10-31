@@ -25,6 +25,7 @@ from kb.indexing.models import (
     StoredDocument,
 )
 from kb.indexing.parser import Parser, TextParser
+from kb.indexing.raw_store import RawObjectStore
 from kb.indexing.store import DocumentStore
 from kb.indexing.suppression import (
     NullSuppressionChecker,
@@ -72,6 +73,7 @@ class IndexingPipeline:
         suppression: SuppressionChecker | None = None,
         vector_indexer: VectorIndexer | None = None,
         subject_indexer: SubjectIndexer | None = None,
+        raw_store: RawObjectStore | None = None,
     ) -> None:
         self._connector = connector
         self._store = store
@@ -83,6 +85,7 @@ class IndexingPipeline:
         self._suppression = suppression or NullSuppressionChecker()
         self._vector_indexer = vector_indexer
         self._subject_indexer = subject_indexer
+        self._raw_store = raw_store
 
     async def run(self, scope: Scope | None = None) -> IndexingStats:
         scanned = indexed = skipped = suppressed = failed = 0
@@ -139,6 +142,14 @@ class IndexingPipeline:
 
             acl = await self._acl_for(ref)
             prepared = self._prepare(ref, raw, normalized, digest, existing, kept, acl)
+            if self._raw_store is not None:
+                await self._raw_store.put(
+                    self._tenant_id,
+                    prepared.doc_id,
+                    digest,
+                    raw.content,
+                    content_type=raw.mime_type,
+                )
             await self._store.apply(prepared)
             if self._vector_indexer is not None:
                 await self._vector_indexer.index(prepared, self._store)

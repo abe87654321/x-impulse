@@ -30,6 +30,8 @@ SOURCE = "src_subj_it"
 EXTERNAL = "ext-subj-1"
 DOC = document_id(SOURCE, EXTERNAL)
 PHONE = "13800138000"
+EMAIL = "alice@example.com"
+EMAIL_IN_DB = "Alice@Example.com"
 PEPPER = "test-pepper"
 COLLECTION = "subj_it"
 SESSION = "sess_subj_it"
@@ -44,21 +46,27 @@ def _key() -> str:
     return subject_key(PHONE, PEPPER)
 
 
+def _email_key() -> str:
+    return subject_key(EMAIL, PEPPER)
+
+
 def _cleanup() -> None:
     db = Database()
-    db.execute(
-        "DELETE FROM subject_index WHERE tenant_id = $1 AND subject_key = $2", TENANT, _key()
-    )
+    for key in (_key(), _email_key()):
+        db.execute(
+            "DELETE FROM subject_index WHERE tenant_id = $1 AND subject_key = $2", TENANT, key
+        )
     db.execute("DELETE FROM subject_keys WHERE tenant_id = $1 AND subject_key = $2", TENANT, _key())
     db.execute("DELETE FROM erasure_certificates WHERE tenant_id = $1", TENANT)
     db.execute("DELETE FROM erasure_scopes WHERE tenant_id = $1", TENANT)
     db.execute("DELETE FROM erasure_requests WHERE tenant_id = $1", TENANT)
-    db.execute(
-        "DELETE FROM suppression_list WHERE tenant_id = $1 "
-        "AND scope_type = 'subject' AND scope_key = $2",
-        TENANT,
-        _key(),
-    )
+    for key in (_key(), _email_key()):
+        db.execute(
+            "DELETE FROM suppression_list WHERE tenant_id = $1 "
+            "AND scope_type = 'subject' AND scope_key = $2",
+            TENANT,
+            key,
+        )
     db.execute("DELETE FROM curated_qa WHERE qa_id = $1", QA)
     db.execute("DELETE FROM eval_cases WHERE case_id = $1", CASE)
     db.execute("DELETE FROM eval_sets WHERE set_id = $1", SET)
@@ -141,7 +149,7 @@ def test_subject_erasure_removes_chunks_and_redacts_texts():
             ANSWER,
             TENANT,
             QUERY,
-            f"电话是{PHONE}[1]。",
+            f"电话是{PHONE}[1]，备用邮箱 {EMAIL_IN_DB}。",
         )
         db.execute(
             """
@@ -171,6 +179,15 @@ def test_subject_erasure_removes_chunks_and_redacts_texts():
             f"张三的电话{PHONE}?",
         )
 
+        asyncio.run(indexer.index_location(TENANT, "session", SESSION, f"张三的电话是{PHONE}"))
+        asyncio.run(
+            indexer.index_location(
+                TENANT, "answer", ANSWER, f"电话是{PHONE}[1]，备用邮箱 {EMAIL_IN_DB}。"
+            )
+        )
+        asyncio.run(indexer.index_location(TENANT, "curated_qa", QA, f"请拨打{PHONE}"))
+        asyncio.run(indexer.index_location(TENANT, "eval_case", CASE, f"张三的电话{PHONE}?"))
+
         cache = InMemoryQueryCache()
         cache.put("q", chunk_ids)
         key_manager = SoftwareKeyManager(kek_from_passphrase("test-kek"))
@@ -189,7 +206,7 @@ def test_subject_erasure_removes_chunks_and_redacts_texts():
         result = asyncio.run(
             service.erase_subject(
                 TENANT,
-                detect_pii(PHONE),
+                [*detect_pii(PHONE), *detect_pii(EMAIL)],
                 executor_id="ops",
                 reviewer_id="compliance",
             )
@@ -217,9 +234,12 @@ def test_subject_erasure_removes_chunks_and_redacts_texts():
             )
             == []
         )
-        assert PHONE not in str(
+        answer_text = str(
             db.fetch("SELECT text FROM answers WHERE answer_id = $1", ANSWER)[0]["text"]
         )
+        assert PHONE not in answer_text
+        assert EMAIL_IN_DB not in answer_text
+        assert "[已依法删除]" in answer_text
         query_text = str(
             db.fetch("SELECT raw_text FROM queries WHERE query_id = $1", QUERY)[0]["raw_text"]
         )
@@ -241,7 +261,7 @@ def test_subject_erasure_removes_chunks_and_redacts_texts():
         )
         assert cert and cert[0]["uncovered_scope_statement"]
 
-        again = asyncio.run(service.erase_subject(TENANT, detect_pii(PHONE)))
+        again = asyncio.run(service.erase_subject(TENANT, [*detect_pii(PHONE), *detect_pii(EMAIL)]))
         assert again.state == "CLOSED"
         assert again.outcomes == ()
     finally:

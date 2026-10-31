@@ -460,3 +460,77 @@ FR-16-05（索引侧 GPU 资源隔离）不在代码层实现，属部署编排�
 
 **边界**：这是部署级（单租户 PF-1）时间窗，不是租户级上线事件表；
 多租户/多阶段上线需要另建租户生命周期表（届时按 TD-01 §10 评估新表）。
+
+---
+
+## A-28 · T-1 主体删除的位置索引扩展到非 chunk 位置
+
+| | |
+| --- | --- |
+| 记录日期 | 2026-10-31 |
+| 状态 | ✅ 已实现（索引写入尚只覆盖 chunk 与 answer） |
+| 影响设计文件 | 无 |
+
+**实现**
+- `PostgresSubjectIndexer` 增加通用 `index_location` / `delete_locations`，
+  位置类型限定为设计文档中的 `chunk | session | answer | curated_qa |
+  eval_case | log`。
+- `ChatService` 在答案落库后写入 `answer` 位置索引。
+- T-1 删除优先按 `subject_index` 定位 session/answer/curated_qa/eval_case，
+  对文本行重新识别 PII 并以主体 HMAC 匹配后脱敏（不再依赖调用方给定写法），
+  未命中再走原有明文兜底检索。
+- 删除成功后清理对应非 chunk 索引行。
+
+**仍然成立的边界**
+- `session` / `curated_qa` / `eval_case` 的写入路径尚未实现，索引写入
+  只有 chunk（流水线）与 answer（对话服务）两处；这两个位置当前仍靠兜底检索。
+- 召回上限仍受 PII 识别率限制；姓名等模型识别类型不在本期。
+- `raw_object` 仍为 SKIPPED，未配置对象存储。
+
+---
+
+## A-29 · 原文对象接入 S3（raw_object 从 SKIPPED 变为真实删除）
+
+| | |
+| --- | --- |
+| 记录日期 | 2026-10-31 |
+| 状态 | ✅ 已实现（文档级删除；主体级仍 SKIPPED） |
+| 影响设计文件 | 无（不新增表） |
+
+**实现**
+- `kb/indexing/raw_store.py`：`RawObjectStore` 端口、`S3RawObjectStore`、
+  `InMemoryRawObjectStore`、`build_raw_store_from_env`。
+- 对象键确定性：`<prefix>/<tenant_id>/<doc_id>/<content_hash>`，不需要
+  新增映射表。删除按文档前缀执行，包含 S3 版本历史（`ListObjectVersions`
+  + 带 `VersionId` 的 `DeleteObjects`）。
+- `IndexingPipeline` 在落库前写入原文；`DocumentErasureService` 在配置了
+  `raw_store` 时执行真实删除并记为 `PHYSICAL_DONE`。
+- 环境：`KB_RAW_OBJECT_STORE=s3`、`KB_RAW_OBJECT_BUCKET`、
+  `KB_RAW_OBJECT_PREFIX`（默认 `raw`）；S3 凭据沿用 `KB_S3_*`。
+
+**边界**
+- 主体级删除（T-1）仍把 `raw_object` 记为 SKIPPED：整篇删除原文可能
+  连带删除同一文档中其他主体的合法内容；按主体重写 PDF/Office 原文的
+  能力尚未实现，不能假装已覆盖。
+- 未完成 multipart upload 的分片残留未清理；大文件上传场景仍需桶级
+  运维或后续补充 `AbortMultipartUpload`。
+- 删除仍依赖桶未开启对象锁/Object Lock；开启后版本删除会被拒绝。
+
+---
+
+## A-30 · 备份加密与轮转的端到端验证方式
+
+| | |
+| --- | --- |
+| 记录日期 | 2026-10-31 |
+| 状态 | ✅ 假基础设施端到端验证通过；真实环境验证仍待 A-19 凭据 |
+| 影响设计文件 | 无 |
+
+**实现**：`tests/compliance/test_backup_chain.py` 用假 S3 与假 Vault 覆盖：
+1. S3 目录按租户/到期时间轮转，只删除到期代次且不跨租户；
+2. KMS 信封加密的备份载荷可解，密钥销毁后不可解；
+3. 从删除前的数据库备份恢复 `subject_keys` 行，仍无法复活密钥。
+
+**边界**：这是组件级端到端验证，不等于客户环境验收。真实备份任务、
+桶策略、KMS/HSM 与凭据到位后，仍需按同一链路在隔离环境跑一次；
+在此之前不得对外声称“备份已加密擦除验证通过”。
