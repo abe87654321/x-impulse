@@ -32,6 +32,7 @@ from kb.retrieval.models import (
     RetrievedChunk,
     ScoredChunk,
 )
+from kb.retrieval.rerank import Reranker
 from kb.retrieval.retriever import (
     AclPermissionChecker,
     AclRepository,
@@ -277,6 +278,7 @@ class HybridRetrievalService:
         collection: str = "kb_chunks",
         config: RetrievalConfig | None = None,
         cache: QueryCache | None = None,
+        reranker: Reranker | None = None,
     ) -> None:
         self._tenant_id = tenant_id
         self._config = config or RetrievalConfig(
@@ -293,6 +295,7 @@ class HybridRetrievalService:
             AclPermissionChecker(acl_repo),
             self._config,
             cache if cache is not None else InMemoryQueryCache(),
+            reranker,
         )
 
     async def retrieve(

@@ -19,10 +19,14 @@ from kb.database import Database
 from kb.generation.answer_service import AnswerService, HybridRetrievalAdapter
 from kb.generation.citations import Answer, Generator
 from kb.generation.extractive import ExtractiveGenerator
-from kb.generation.llm import LLMConfig, OpenAICompatibleGenerator
+from kb.generation.llm import (
+    LLMConfig,
+    OpenAICompatibleGenerator,
+    build_generator_from_env,
+)
 from kb.identity.permissions import FULL_SCOPE, DelegationContext, Principal
 from kb.indexing.deletion import DocumentDeletionService
-from kb.indexing.embedding import HashingEmbedder
+from kb.indexing.embedding import HashingEmbedder, build_embedder_from_env
 from kb.indexing.pipeline import IndexingPipeline
 from kb.indexing.store import PostgresDocumentStore
 from kb.indexing.suppression import PostgresSuppressionChecker
@@ -71,6 +75,8 @@ def _suppression_checker() -> PostgresSuppressionChecker | None:
 
 
 def _generator() -> Generator:
+    if os.environ.get("KB_GENERATOR"):
+        return build_generator_from_env()
     base_url = os.environ.get("KB_LLM_BASE_URL")
     if base_url:
         return OpenAICompatibleGenerator(
@@ -81,6 +87,12 @@ def _generator() -> Generator:
             )
         )
     return ExtractiveGenerator()
+
+
+def _embedder():
+    if os.environ.get("KB_EMBEDDER"):
+        return build_embedder_from_env()
+    return HashingEmbedder(dimension=64)
 
 
 async def run_demo(
@@ -99,7 +111,7 @@ async def run_demo(
     connector = LocalFolderConnector(source)
     store = PostgresDocumentStore()
     vectors = InMemoryVectorStore()
-    embedder = HashingEmbedder(dimension=64)
+    embedder = _embedder()
 
     pipeline = IndexingPipeline(
         connector,

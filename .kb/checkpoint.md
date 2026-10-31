@@ -2,57 +2,60 @@
 
 | | |
 | --- | --- |
-| 保存时间 | 2026-10-30T16:43:02+00:00 |
-| HEAD | `195e19bc06ce` 实现限制处理与保留期到期清除 |
-| 工作区 | 仅未跟踪 `.claude/`；其余已提交 |
-| 单元测试 | 实跑：`132 passed, 2 skipped, 15 deselected`（integration 之外） |
-| 全量测试 | 实跑：`147 passed, 2 skipped`（含集成，需 `make up`） |
+| 保存时间 | 2026-10-31T08:16:37+00:00 |
+| HEAD | `8bbd8fc9848f` |
+| 工作区 | 有大量未提交改动（本轮新增/修改，未 commit；另含未跟踪 `.claude/`） |
+| 单元测试 | 实跑：`269 passed, 2 skipped, 22 deselected`（integration 之外） |
+| 集成测试 | 实跑：`22 passed`（需 `make up` / PostgreSQL） |
 | git | 未 push。`origin` 已配，VPN 阻断 |
 
 ## 1. 手头这一步
 
-- **目标**：核心链路与合规链路已闭环（同步 → 索引 → 混合检索 → 生成/引用 → API/审计 → 文档级/T-1 删除 → 加密擦除 → 墓碑 → 限制处理）
-- **验收**：`.venv/bin/pytest -q` → `147 passed, 2 skipped`
-- **进度**：本期纯逻辑、持久层、删除链路均完成；尚未做流式回答、限流、真实嵌入/模型、审计加密写入
+- **目标**：备份合规链路的可扩展接入 —— KMS 接缝、恢复演练闸门、备份目录领域层、设置表与管理 API、manifest 工具与本机演练。
+- **验收**：`ruff check .` / `ruff format --check .` 通过；`pytest -m "not integration"` → 269 passed；`pytest -m integration` → 22 passed；`make schema-check` → 29 张表。
+- **进度**：本轮全部完成。新增迁移 `0002_service_settings.sql` 已应用到本地库；`make up` 现在会自动跑 `make migrate`。
+- **未提交**：按项目规则，用户未明确要求 commit，故未提交。
 
 ## 2. 试过并否决的
 
 | 方案 | 为什么否决 |
 | --- | --- |
-| 词法腿用 `ILIKE` 子串计数 | 不是 BM25，排序没有长度/IDF 概念；已替换为应用层 BM25 |
-| 文档级删除把 audit/backup 标成 `PHYSICAL_DONE` | 没有真实密文与备份接入时是虚假覆盖；改为 `SKIPPED`/`LOGICAL_DONE` 并写入未覆盖声明 |
-| T-1 删除整条会话/答案 | 会话是提问者的数据；改为原位替换为 `[已依法删除]` |
-| 抑制键直接用 `external_id` 或未哈希的 NUL 字符串 | 前者与墓碑对不上，后者被 Postgres text 拒绝（0x00）；统一 `document_scope_key` + 哈希器 |
-| 审计 payload 写问题原文 | 违反 FR-09-01 / FR-12-16；只写 `query_id` 与 `text_hash` |
-| 复用旧 dev 数据库卷 | schema 已漂移（缺 `parser_version` 等），直接跑集成测试报列不存在；用 `make reset` 重建 |
+| 直接修改 `schema.sql` 加设置表 | 违反 TD-01 §12 M-2；改用增量迁移 `migrations/0002_service_settings.sql` |
+| 让 Agent 通过管理 API 直接执行设置变更 | 违反 A-13 / NG-4 / NG-7；只保留 `proposals` 提案端点，PUT 对 `x-actor-type: agent` 返回 403 |
+| 备份轮转用单一长期密钥 | 无法做主体级加密擦除；策略层直接拒绝 `single_long_lived` |
+| 备份权威状态只放业务库 | 恢复旧备份会回滚删除状态；策略层拒绝 `authority_store=db_only` |
+| 恢复演练自动删除数据 | 风险过高；`RestoreGuard` 只扫描并阻断，清理由隔离环境的人/编排执行 |
+| manifest 模式声称已物理删除介质 | manifest 只读/生命周期外部执行；文案明确只报告到期，不宣称物理清除 |
 
 ## 3. 卡住的决策
 
 | 编号 | 问题 | 在等谁 |
 | --- | --- | --- |
-| Q-16 | Cross-Encoder 重排模型与 Top-K 默认值 | 算法实测（需 FR-04-17 基线） |
-| E-1 | 加密擦除是否被客户合规官接受为等效删除 | 客户合规 + 法务 |
-| E-3 | 备份轮转周期 | 客户基础设施 + 合规 |
-| —（未编号） | 真实嵌入模型与生成模型选型 | 算法 + 硬件/部署方 |
+| Q-16 | 重排模型与 Top-K 默认值；需 FR-04-17 真实评测基线 | 算法 |
+| E-1 | 加密擦除是否被客户合规官接受 | 客户合规 + 法务 |
+| E-3 | 备份轮转周期具体取值 | 客户基础设施 + 合规 |
+| A-19 | 真实备份系统 API/凭据/租户隔离方式 | 用户/客户基础设施 |
+| A-20 | 真实 KMS 厂商适配器（Vault Transit / 云 KMS / HSM） | 部署环境 |
 
 ## 4. 下一步
 
 ```bash
-# 推送（VPN 恢复后）
-git push -u origin master
-
-# 建议下一项：流式回答 + 限流/配额
-grep -n "FR-05-12\|### FR-16\|FR-16-" docs/prd.md
+# 先确认工作区并跑完整自检
+make up
+make schema-check
+.venv/bin/pytest -m "not integration" -q
+DATABASE_URL=postgresql://kb:dev@localhost/kb .venv/bin/pytest -m integration -q
 ```
 
-实现顺序建议：
-1. `POST /v1/ask/stream`（SSE），复用 `CitationBinder.bind_stream` 的逐句校验
-2. 限流/配额（FR-16）：按租户/主体，读部署档案配置
-3. 真实嵌入/生成适配器（现有 `Embedder` / `Generator` 协议可直接替换）
-4. FR-04-17 评测基线与重排开关（阻塞 Q-16）
+建议顺序：
+1. 接 `HttpBackupCatalog` 的真实厂商适配器（`catalog_mode=http_api`），用用户提供的目录 API 与凭据引用。
+2. 用 `config/backup_manifest.jsonl` 或真实 manifest 跑：
+   `.venv/bin/python -m kb.backup_drill --manifest <path> --manifest-tenant <tenant>`
+3. 实现真实 KMS 适配器（先 Vault Transit，再部署环境对应云 KMS）。
+4. 处理 A-13 的实施顾问上线降级逻辑（当前允许 `implementation_consultant` 写设置）。
 
 ## 5. 本次会话未解决的疑问
 
-- `.claude/` 下是本地技能副本，是否纳入版本库仍需用户确认
-- 首次推送仍未完成：需确认远端仓库与默认分支
-- `schema.sql` 新增了 `erasure_location_types('document')` 字典行；新库自动带，旧库由 `RestrictionService` 运行时补齐
+- 用户尚未提供真实备份系统类型、目录 API、租户隔离方式；`external_catalog` 目前是 manifest 参考实现。
+- 另一个 agent 曾在 04:09 创建并删除 `kb/compliance/manifest_drill.py` 与对应测试，只留下旧 `.pyc`；已删除残留 pyc，确认无源码引用。`.pytest_cache` 中仍有旧测试名，属缓存。
+- `.claude/` 下是本地技能副本，是否纳入版本库仍需用户确认。

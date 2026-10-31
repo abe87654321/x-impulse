@@ -1,5 +1,38 @@
 """compliance —— 数据主体权利与贯穿式删除。"""
 
+from kb.compliance.backup import (
+    BackupErasureOutcome,
+    BackupRotation,
+    BackupRotationStatus,
+    TrackingBackupRotation,
+    UnconfiguredBackupRotation,
+    build_backup_rotation_from_env,
+)
+from kb.compliance.backup_adapters import (
+    BackupCatalogRegistry,
+    CatalogDependencies,
+    FileManifestSource,
+    HttpBackupCatalog,
+    HttpTransport,
+    InMemoryBackupCatalog,
+    ManifestBackupCatalog,
+    UrllibHttpTransport,
+    default_backup_registry,
+)
+from kb.compliance.backup_domain import (
+    BackupCatalog,
+    BackupCatalogError,
+    BackupGeneration,
+    CatalogBackupRotation,
+    TenantIsolation,
+)
+from kb.compliance.backup_policy import (
+    BackupPolicy,
+    backup_settings_dag,
+    build_rotation_from_policy,
+    evaluate_backup_policy,
+    resolve_backup_policy,
+)
 from kb.compliance.crypto import (
     KeyDestroyedError,
     KeyManager,
@@ -14,13 +47,56 @@ from kb.compliance.erasure import (
     PostgresErasureRepository,
     request_id_for,
 )
+from kb.compliance.kms import (
+    FakeKmsClient,
+    KmsClient,
+    KmsError,
+    KmsKeyDestroyedError,
+    KmsKeyManager,
+    PostgresSubjectKeyStore,
+    SubjectKeyStore,
+)
 from kb.compliance.pii import DetectedPII, detect_pii, normalize_pii, subject_key
+from kb.compliance.restore import (
+    RestoreCatalog,
+    RestoreFinding,
+    RestoreGuard,
+    RestoreReport,
+    RestoreViolation,
+)
 from kb.compliance.restriction import HoldInfo, RestrictionService
 from kb.compliance.subject_erasure import SubjectErasureService
 from kb.compliance.subject_index import PostgresSubjectIndexer
 
 __all__ = [
+    "BackupCatalog",
+    "BackupCatalogError",
+    "BackupCatalogRegistry",
+    "BackupErasureOutcome",
+    "BackupGeneration",
+    "BackupPolicy",
+    "CatalogBackupRotation",
+    "CatalogDependencies",
+    "BackupRotation",
+    "BackupRotationStatus",
+    "FakeKmsClient",
+    "FileManifestSource",
+    "HttpBackupCatalog",
+    "HttpTransport",
+    "InMemoryBackupCatalog",
     "HoldInfo",
+    "KmsClient",
+    "KmsError",
+    "KmsKeyDestroyedError",
+    "KmsKeyManager",
+    "ManifestBackupCatalog",
+    "PostgresSubjectKeyStore",
+    "RestoreCatalog",
+    "RestoreFinding",
+    "RestoreGuard",
+    "RestoreReport",
+    "RestoreViolation",
+    "SubjectKeyStore",
     "RestrictionService",
     "KeyDestroyedError",
     "KeyManager",
@@ -29,6 +105,10 @@ __all__ = [
     "DetectedPII",
     "PostgresSubjectIndexer",
     "SubjectErasureService",
+    "TenantIsolation",
+    "TrackingBackupRotation",
+    "UrllibHttpTransport",
+    "UnconfiguredBackupRotation",
     "detect_pii",
     "normalize_pii",
     "subject_key",
@@ -37,5 +117,11 @@ __all__ = [
     "ErasureResult",
     "LocationOutcome",
     "PostgresErasureRepository",
+    "backup_settings_dag",
+    "default_backup_registry",
+    "build_backup_rotation_from_env",
+    "build_rotation_from_policy",
+    "evaluate_backup_policy",
+    "resolve_backup_policy",
     "request_id_for",
 ]

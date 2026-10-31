@@ -30,6 +30,7 @@ from kb.retrieval.models import (
     RetrievalConfig,
     RetrievedChunk,
 )
+from kb.retrieval.rerank import Reranker
 
 
 class RecallBackend(Protocol):
@@ -119,12 +120,16 @@ class Retriever:
         permissions: PermissionChecker,
         config: RetrievalConfig,
         cache: QueryCache | None = None,
+        reranker: Reranker | None = None,
     ) -> None:
+        if config.rerank_enabled and reranker is None:
+            raise ValueError("rerank_enabled=True 时必须注入重排器")
         self._backend = backend
         self._repo = repository
         self._permissions = permissions
         self._config = config
         self._cache: QueryCache = cache if cache is not None else InMemoryQueryCache()
+        self._reranker = reranker
 
     @property
     def cache(self) -> QueryCache:
@@ -143,6 +148,7 @@ class Retriever:
         top_k = cfg.top_k if k is None else k
         if top_k <= 0:
             raise ValueError("k 必须 > 0")
+        fetch_k = max(top_k, cfg.rerank_top_k) if cfg.rerank_enabled else top_k
 
         memberships = await self._permissions.memberships(ctx)
         allowed_docs = await self._permissions.allowed_doc_ids(ctx, memberships)
@@ -165,15 +171,18 @@ class Retriever:
         if cached is not None:
             candidates = await self._load_cached(cached, flt)
         else:
-            candidates = await self._recall_and_fuse(query, flt, top_k)
+            candidates = await self._recall_and_fuse(query, flt, fetch_k)
             self._cache.put(key, tuple(c.record.chunk_id for c in candidates))
 
-        return await self._revalidate(ctx, candidates, memberships, top_k)
+        approved = await self._revalidate(ctx, candidates, memberships, fetch_k)
+        if cfg.rerank_enabled and self._reranker is not None and approved:
+            return await self._reranker.rerank(query, approved, limit=top_k)
+        return approved[:top_k]
 
     async def _recall_and_fuse(
-        self, query: str, flt: RecallFilter, top_k: int
+        self, query: str, flt: RecallFilter, fetch_k: int
     ) -> list[RetrievedChunk]:
-        limit = max(top_k * self._config.overfetch, top_k)
+        limit = max(fetch_k * self._config.overfetch, fetch_k)
         recall = await self._backend.search(query, limit=limit, recall_filter=flt)
         fused = fuse(recall, self._config)
         return [
@@ -206,13 +215,13 @@ class Retriever:
         ctx: DelegationContext,
         candidates: Sequence[RetrievedChunk],
         memberships: frozenset[str],
-        top_k: int,
+        limit: int,
     ) -> list[RetrievedChunk]:
         results: list[RetrievedChunk] = []
         for candidate in candidates:
             if not await self._permissions.is_allowed(ctx, candidate.record.doc_id, memberships):
                 continue
             results.append(candidate)
-            if len(results) >= top_k:
+            if len(results) >= limit:
                 break
         return results

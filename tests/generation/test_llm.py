@@ -93,3 +93,43 @@ async def test_empty_content_raises_generation_error():
 
     with pytest.raises(GenerationError):
         await generator.generate("q", _evidence())
+
+
+class _StreamCapture:
+    def __init__(self, items: list[object]) -> None:
+        self.items = items
+        self.body: bytes = b""
+
+    def __call__(self, url, headers, body, timeout):
+        self.body = body
+        return iter(self.items)
+
+
+def _delta(content: str) -> dict:
+    return {"choices": [{"delta": {"content": content}}]}
+
+
+async def test_streams_incremental_content():
+    capture = _StreamCapture([_delta("事实"), _delta("句"), _delta("[1]。")])
+    generator = OpenAICompatibleGenerator(stream_transport=capture)
+
+    parts = [part async for part in generator.generate_stream("q", _evidence())]
+
+    assert "".join(parts) == "事实句[1]。"
+    assert json.loads(capture.body)["stream"] is True
+
+
+async def test_stream_ignores_empty_deltas_and_reasoning():
+    capture = _StreamCapture(
+        [
+            {"choices": [{"delta": {"role": "assistant"}}]},
+            _delta(""),
+            _delta("内容[1]。"),
+            {"choices": []},
+        ]
+    )
+    generator = OpenAICompatibleGenerator(stream_transport=capture)
+
+    parts = [part async for part in generator.generate_stream("q", _evidence())]
+
+    assert parts == ["内容[1]。"]

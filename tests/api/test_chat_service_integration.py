@@ -12,37 +12,68 @@ import pytest
 from kb.api.chat_service import ChatService
 from kb.audit.writer import PostgresAuditStore
 from kb.database import Database
-from kb.generation.citations import Answer, BoundSentence, Citation
+from kb.generation.answer_service import AnswerResult, PreparedStream
+from kb.generation.citations import Answer, BoundSentence, Citation, StreamEvent
 from kb.identity.permissions import FULL_SCOPE, DelegationContext, Principal
+from kb.retrieval.models import RetrievedChunk
+from tests.retrieval.fakes import make_record
 
 pytestmark = pytest.mark.integration
 
 TENANT = "t_api_it"
 
 
+def _citation() -> Citation:
+    return Citation(
+        sentence_index=0,
+        chunk_id="chk_api",
+        doc_id="doc_api",
+        page_no=1,
+        section_path="A",
+        clause_no="1",
+        char_start=0,
+        char_end=10,
+        chunk_content_hash="hash",
+        chunk_version="1",
+        doc_version="1",
+    )
+
+
+def _answer() -> Answer:
+    citation = _citation()
+    sentence = BoundSentence(sentence_index=0, text="答案。", citations=(citation,))
+    return Answer(
+        text="答案。",
+        sentences=(sentence,),
+        citations=(citation,),
+        refused=False,
+        refusal_reason=None,
+    )
+
+
+def _evidence() -> tuple[RetrievedChunk, ...]:
+    return (
+        RetrievedChunk(
+            record=make_record("chk_api", doc_id="doc_api", tenant_id=TENANT), score=1.0
+        ),
+    )
+
+
 class _Answers:
     async def answer(self, ctx, question):  # noqa: ANN001, ANN201
-        citation = Citation(
-            sentence_index=0,
-            chunk_id="chk_api",
-            doc_id="doc_api",
-            page_no=1,
-            section_path="A",
-            clause_no="1",
-            char_start=0,
-            char_end=10,
-            chunk_content_hash="hash",
-            chunk_version="1",
-            doc_version="1",
-        )
-        sentence = BoundSentence(sentence_index=0, text="答案。", citations=(citation,))
-        return Answer(
-            text="答案。",
-            sentences=(sentence,),
-            citations=(citation,),
-            refused=False,
-            refusal_reason=None,
-        )
+        return _answer()
+
+    async def answer_with_evidence(self, ctx, question):  # noqa: ANN001, ANN201
+        return AnswerResult(answer=_answer(), evidence=_evidence())
+
+    async def prepare_stream(self, ctx, question):  # noqa: ANN001, ANN201
+        async def events():  # noqa: ANN202
+            citation = _citation()
+            yield StreamEvent(
+                kind="sentence", text="答案。", sentence_index=0, citations=(citation,)
+            )
+
+        return PreparedStream(evidence=_evidence(), events=events())
 
 
 def _ctx() -> DelegationContext:
@@ -145,5 +176,41 @@ def test_chat_persists_and_audits_without_raw_text():
         assert logs[0]["prev_hash"] is None
         assert logs[1]["prev_hash"] == logs[0]["row_hash"]
         assert "报销标准" not in json.dumps(logs, ensure_ascii=False, default=str)
+    finally:
+        _cleanup()
+
+
+def test_chat_stream_persists_answer_and_ttft():
+    _cleanup()
+    Database().execute(
+        "INSERT INTO tenants (tenant_id, display_name) VALUES ($1,'api-test')", TENANT
+    )
+    _seed_chunk()
+    try:
+        service = ChatService(_Answers(), audit=PostgresAuditStore())
+
+        async def collect():
+            return [
+                event
+                async for event in service.ask_stream(
+                    _ctx(), TENANT, "报销标准是什么？", session_id="sess_stream"
+                )
+            ]
+
+        events = asyncio.run(collect())
+
+        assert [event.kind for event in events] == ["sentence", "done"]
+        assert events[1].refused is False
+        answer_id = events[1].answer_id
+        assert answer_id
+        db = Database()
+        answer = db.fetch(
+            "SELECT text, refused, ttft_ms FROM answers WHERE answer_id = $1", answer_id
+        )[0]
+        assert answer["text"] == "答案。"
+        assert answer["refused"] is False
+        assert answer["ttft_ms"] is not None
+        citations = db.fetch("SELECT chunk_id FROM citations WHERE answer_id = $1", answer_id)
+        assert citations == [{"chunk_id": "chk_api"}]
     finally:
         _cleanup()

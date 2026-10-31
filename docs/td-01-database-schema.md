@@ -662,6 +662,7 @@ CREATE INDEX ix_sr_source ON sync_runs (tenant_id, source_id, started_at DESC);
 | `audit_log` | ✅ | ✅ 加密擦除 | — | — | — | `row_hash` 链 |
 | `erasure_*` | ✅ | ✅ HMAC | — | — | — | 证明归档 |
 | `suppression_list` | ✅ | ✅ HMAC | — | — | — | — |
+| `service_settings` | ✅ | — | — | — | — | `version` + `updated_by`，变更入 audit_log |
 
 **未通过项：0。**
 

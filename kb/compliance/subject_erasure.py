@@ -19,6 +19,7 @@ from datetime import UTC, datetime, timedelta
 
 import asyncpg
 
+from kb.compliance.backup import BackupRotation, UnconfiguredBackupRotation
 from kb.compliance.crypto import KeyManager
 from kb.compliance.erasure import (
     ErasureResult,
@@ -64,6 +65,7 @@ class SubjectErasureService:
         retention_days: int = 15,
         dsn: str | None = None,
         key_manager: KeyManager | None = None,
+        backup: BackupRotation | None = None,
     ) -> None:
         if not pepper:
             raise ValueError("pepper 不能为空")
@@ -78,6 +80,7 @@ class SubjectErasureService:
         self._retention_days = retention_days
         self._dsn = dsn or dsn_from_env()
         self._key_manager = key_manager
+        self._backup: BackupRotation = backup or UnconfiguredBackupRotation()
 
     async def erase_subject(
         self,
@@ -208,17 +211,22 @@ class SubjectErasureService:
         destroyed = await self._destroy_keys(tenant_id, keys)
         if destroyed:
             key_status: ScopeStatus = "LOGICAL_DONE"
-            audit_detail = "DEK 已销毁（软件 KEK；生产需 KMS，审计加密写入未验证）"
-            backup_detail = "DEK 已销毁；备份轮转未验证"
+            audit_detail = "DEK 已销毁（软件 KEK；生产需 KMS）"
         else:
             key_status = "SKIPPED"
             audit_detail = "该主体无 DEK 记录或未接入 KMS"
-            backup_detail = "该主体无 DEK 记录或未接入备份密钥销毁"
         outcomes.append(
             LocationOutcome("audit", request_id, "crypto_shred", key_status, audit_detail)
         )
+        backup_outcome = await self._notify_backup(tenant_id, keys)
         outcomes.append(
-            LocationOutcome("backup", request_id, "crypto_shred", key_status, backup_detail)
+            LocationOutcome(
+                "backup",
+                request_id,
+                "crypto_shred",
+                backup_outcome[0],
+                backup_outcome[1],
+            )
         )
         outcomes.append(
             self._redaction_outcome(
@@ -250,6 +258,31 @@ class SubjectErasureService:
         return LocationOutcome(
             location_type, request_id, action, "PHYSICAL_DONE", f"脱敏 {count} 行"
         )
+
+    async def _notify_backup(self, tenant_id: str, keys: list[str]) -> tuple[ScopeStatus, str]:
+        if not keys:
+            return ("SKIPPED", "无主体标识，未登记备份轮转")
+        statuses: list[ScopeStatus] = []
+        details: list[str] = []
+        expires: list[str] = []
+        for key in keys:
+            outcome = await self._backup.notify_erasure(
+                tenant_id, scope_type="subject", scope_key=key
+            )
+            statuses.append(outcome.status)  # type: ignore[arg-type]
+            details.append(outcome.detail)
+            if outcome.expires_at is not None:
+                expires.append(outcome.expires_at.date().isoformat())
+        if "FAILED" in statuses:
+            status: ScopeStatus = "FAILED"
+        elif "LOGICAL_DONE" in statuses:
+            status = "LOGICAL_DONE"
+        else:
+            status = "SKIPPED"
+        detail = "；".join(dict.fromkeys(details))
+        if expires:
+            detail = f"{detail}（最晚到期 {max(expires)}）"
+        return (status, detail)
 
     async def _destroy_keys(self, tenant_id: str, keys: list[str]) -> bool:
         if self._key_manager is None:
@@ -362,7 +395,7 @@ class SubjectErasureService:
         uncovered = "未覆盖位置：" + "；".join(f"{o.location_type}（{o.detail}）" for o in skipped)
         uncovered += (
             "；PII 召回上限受识别模型限制，另含兜底字面检索"
-            "；加密擦除使用软件 KEK，审计加密写入与备份轮转尚未验证，生产须接 KMS"
+            "；加密擦除使用软件 KEK，备份轮转尚未验证，生产须接 KMS"
         )
         method = (
             "主体标识归一化后 HMAC 精确匹配 subject_index；"

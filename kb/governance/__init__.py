@@ -1,1 +1,83 @@
-"""governance"""
+"""治理与运营 —— 限流、配额与告警。"""
+
+from kb.governance.metering import (
+    InMemoryUsageMeter,
+    UsageMeter,
+    UsageRecord,
+    usage_record,
+)
+from kb.governance.rate_limit import (
+    ExtractionSignal,
+    InMemoryWindowStore,
+    RateDecision,
+    RateLimitConfig,
+    RateLimited,
+    RateLimiter,
+    WindowStore,
+)
+from kb.governance.settings_dag import (
+    ResolvedSettings,
+    SettingsDAG,
+    SettingsError,
+    SettingsGraphError,
+    SettingSpec,
+)
+from kb.governance.settings_service import (
+    ALL_ROLES,
+    DEFAULT_SETTINGS_READERS,
+    DEFAULT_SETTINGS_WRITERS,
+    ROLE_EMPLOYEE,
+    ROLE_EXPERT,
+    ROLE_IMPLEMENTATION_CONSULTANT,
+    ROLE_KNOWLEDGE_ADMIN,
+    ROLE_SECURITY_AUDITOR,
+    ROLE_SYSTEM_ADMIN,
+    ApprovalPolicy,
+    ApprovalRequired,
+    BackupSettingsService,
+    NoApprovalPolicy,
+    SettingsChangeResult,
+    SettingsWriteDenied,
+)
+from kb.governance.settings_store import (
+    InMemorySettingsStore,
+    PostgresSettingsStore,
+    SettingsStore,
+)
+
+__all__ = [
+    "ExtractionSignal",
+    "InMemoryUsageMeter",
+    "InMemoryWindowStore",
+    "RateDecision",
+    "ALL_ROLES",
+    "ApprovalPolicy",
+    "ApprovalRequired",
+    "BackupSettingsService",
+    "DEFAULT_SETTINGS_READERS",
+    "DEFAULT_SETTINGS_WRITERS",
+    "InMemorySettingsStore",
+    "NoApprovalPolicy",
+    "PostgresSettingsStore",
+    "ROLE_EMPLOYEE",
+    "ROLE_EXPERT",
+    "ROLE_IMPLEMENTATION_CONSULTANT",
+    "ROLE_KNOWLEDGE_ADMIN",
+    "ROLE_SECURITY_AUDITOR",
+    "ROLE_SYSTEM_ADMIN",
+    "RateLimitConfig",
+    "ResolvedSettings",
+    "RateLimited",
+    "RateLimiter",
+    "SettingSpec",
+    "SettingsDAG",
+    "SettingsChangeResult",
+    "SettingsError",
+    "SettingsStore",
+    "SettingsWriteDenied",
+    "SettingsGraphError",
+    "UsageMeter",
+    "UsageRecord",
+    "WindowStore",
+    "usage_record",
+]

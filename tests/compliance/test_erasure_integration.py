@@ -8,6 +8,7 @@ import json
 
 import pytest
 
+from kb.compliance.backup import TrackingBackupRotation
 from kb.compliance.erasure import (
     DocumentErasureService,
     PostgresErasureRepository,
@@ -190,6 +191,7 @@ def test_document_erasure_covers_ten_locations_and_is_idempotent():
             cache,
             scope_key_hasher=_hasher,
             collection=COLLECTION,
+            backup=TrackingBackupRotation(rotation_days=90),
         )
         result = asyncio.run(
             service.erase_document(TENANT, DOC, executor_id="ops", reviewer_id="compliance")
@@ -204,6 +206,7 @@ def test_document_erasure_covers_ten_locations_and_is_idempotent():
         assert statuses["curated_qa"] == "PHYSICAL_DONE"
         assert statuses["eval_case"] == "PHYSICAL_DONE"
         assert statuses["audit"] == "SKIPPED"
+        assert statuses["backup"] == "LOGICAL_DONE"
         assert statuses["raw_object"] == "SKIPPED"
 
         db = Database()

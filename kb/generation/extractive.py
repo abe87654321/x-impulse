@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
 
 from kb.retrieval.models import RetrievedChunk
 
@@ -25,6 +25,14 @@ class ExtractiveGenerator:
                 continue
             parts.append(f"{text}[{index}]")
         return "".join(parts)
+
+    async def generate_stream(
+        self, question: str, evidence: Sequence[RetrievedChunk]
+    ) -> AsyncIterator[str]:
+        """逐字输出，保持与 `generate` 相同的内容（FR-05-12）。"""
+        raw = await self.generate(question, evidence)
+        for char in raw:
+            yield char
 
 
 __all__ = ["ExtractiveGenerator"]

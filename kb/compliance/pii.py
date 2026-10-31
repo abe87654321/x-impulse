@@ -43,8 +43,8 @@ def normalize_pii(subject_type: str, value: str) -> str:
     return re.sub(r"[\s-]+", "", value)
 
 
-def detect_pii(text: str) -> list[DetectedPII]:
-    """识别并去重；重叠匹配按“先长后短”保留。"""
+def detect_pii_spans(text: str) -> list[tuple[int, int, DetectedPII]]:
+    """识别并去重；重叠匹配按“先长后短”保留，返回非重叠的字符区间。"""
     spans: list[tuple[int, int, DetectedPII]] = []
     for subject_type, pattern, confidence in _PATTERNS:
         for match in pattern.finditer(text):
@@ -64,7 +64,7 @@ def detect_pii(text: str) -> list[DetectedPII]:
 
     spans.sort(key=lambda item: (item[0], -(item[1] - item[0])))
     seen: set[tuple[str, str]] = set()
-    result: list[DetectedPII] = []
+    result: list[tuple[int, int, DetectedPII]] = []
     covered_until = -1
     for start, end, detected in spans:
         if start < covered_until:
@@ -74,8 +74,12 @@ def detect_pii(text: str) -> list[DetectedPII]:
         if key in seen:
             continue
         seen.add(key)
-        result.append(detected)
+        result.append((start, end, detected))
     return result
+
+
+def detect_pii(text: str) -> list[DetectedPII]:
+    return [detected for _, _, detected in detect_pii_spans(text)]
 
 
 def subject_key(normalized: str, pepper: str) -> str:
@@ -87,6 +91,7 @@ __all__ = [
     "PII_NORM_VERSION",
     "DetectedPII",
     "detect_pii",
+    "detect_pii_spans",
     "normalize_pii",
     "subject_key",
 ]

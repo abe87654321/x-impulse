@@ -127,6 +127,8 @@ class RetrievalConfig:
     rrf_k: int = 60
     # FR-04-08：默认关闭，是否启用由 FR-04-17 的实测差值决定。
     rerank_enabled: bool = False
+    # 重排候选深度：先取更深的候选再精排到 top_k。FR-04-17 同时测 10/50。
+    rerank_top_k: int = 50
 
     def __post_init__(self) -> None:
         if not self.audience_allowlist:
@@ -143,3 +145,5 @@ class RetrievalConfig:
             raise ValueError("融合权重之和必须 > 0")
         if self.rrf_k <= 0:
             raise ValueError("rrf_k 必须 > 0")
+        if self.rerank_top_k <= 0:
+            raise ValueError("rerank_top_k 必须 > 0")

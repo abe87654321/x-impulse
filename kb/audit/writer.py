@@ -9,14 +9,18 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
+import os
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
 
 import asyncpg
 
+from kb.audit.protection import AuditPayloadError, FieldKeyManager, protect_payload
 from kb.database import dsn_from_env
 
 _LAST_SQL = """
@@ -51,12 +55,27 @@ class AuditStore(Protocol):
 
 
 class PostgresAuditStore:
-    def __init__(self, dsn: str | None = None) -> None:
+    def __init__(
+        self,
+        dsn: str | None = None,
+        *,
+        key_manager: FieldKeyManager | None = None,
+        subject_hasher: Callable[[str], str] | None = None,
+    ) -> None:
+        if key_manager is not None and subject_hasher is None:
+            raise ValueError("配置审计加密时必须提供 subject_hasher")
         self._dsn = dsn or dsn_from_env()
+        self._key_manager = key_manager
+        self._subject_hasher = subject_hasher
 
     async def append(self, event: AuditEvent, *, now: datetime | None = None) -> str:
         ts = now or datetime.now(UTC)
-        payload = event.payload or {}
+        payload = await protect_payload(
+            event.payload or {},
+            tenant_id=event.tenant_id,
+            key_manager=self._key_manager,
+            subject_hasher=self._subject_hasher,
+        )
         payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
         conn = await asyncpg.connect(self._dsn)
         try:
@@ -103,4 +122,29 @@ def _row_hash(prev_hash: str | None, ts: datetime, event: AuditEvent, payload_js
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-__all__ = ["AuditEvent", "AuditStore", "PostgresAuditStore"]
+def build_audit_store_from_env(
+    dsn: str | None = None, environ: Mapping[str, str] | None = None
+) -> PostgresAuditStore:
+    """按环境配置装配审计存储；只配一半的加密参数视为配置错误。"""
+    env = os.environ if environ is None else environ
+    kek_raw = env.get("KB_KEK_BASE64")
+    pepper = env.get("KB_AUDIT_PII_PEPPER") or env.get("KB_SUPPRESSION_PEPPER")
+    if not kek_raw and not pepper:
+        return PostgresAuditStore(dsn)
+    if not kek_raw or not pepper:
+        raise AuditPayloadError("审计加密需同时配置 KB_KEK_BASE64 与 KB_AUDIT_PII_PEPPER")
+    from kb.compliance.crypto import SoftwareKeyManager
+    from kb.compliance.pii import subject_key
+
+    try:
+        kek = base64.b64decode(kek_raw, validate=True)
+    except ValueError as exc:
+        raise AuditPayloadError("KB_KEK_BASE64 不是合法 base64") from exc
+    return PostgresAuditStore(
+        dsn,
+        key_manager=SoftwareKeyManager(kek=kek, dsn=dsn),
+        subject_hasher=lambda value: subject_key(value, pepper),
+    )
+
+
+__all__ = ["AuditEvent", "AuditStore", "PostgresAuditStore", "build_audit_store_from_env"]

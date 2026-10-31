@@ -23,6 +23,7 @@ from typing import Literal, Protocol
 
 import asyncpg
 
+from kb.compliance.backup import BackupRotation, UnconfiguredBackupRotation
 from kb.compliance.restriction import RestrictionService
 from kb.database import dsn_from_env
 from kb.indexing.deletion import CacheInvalidator
@@ -305,6 +306,7 @@ class DocumentErasureService:
         collection: str = "kb_chunks",
         retention_days: int = 15,
         restrictions: RestrictionService | None = None,
+        backup: BackupRotation | None = None,
     ) -> None:
         self._repo = repository
         self._store = store
@@ -314,6 +316,7 @@ class DocumentErasureService:
         self._collection = collection
         self._retention_days = retention_days
         self._restrictions = restrictions
+        self._backup: BackupRotation = backup or UnconfiguredBackupRotation()
 
     async def erase_document(
         self,
@@ -370,8 +373,9 @@ class DocumentErasureService:
                     outcomes=tuple(outcomes),
                 )
 
+        scope_key = self._hasher(document_scope_key(source_id, external_id))
         chunk_ids = await self._store.list_chunk_ids(tenant_id, doc_id)
-        outcomes = await self._execute_locations(tenant_id, doc_id, chunk_ids)
+        outcomes = await self._execute_locations(tenant_id, doc_id, chunk_ids, scope_key)
 
         for outcome in outcomes:
             await self._repo.record_scope(tenant_id, request_id, outcome)
@@ -379,7 +383,7 @@ class DocumentErasureService:
         await self._repo.put_suppression(
             tenant_id,
             "document",
-            self._hasher(document_scope_key(source_id, external_id)),
+            scope_key,
             reason,
         )
 
@@ -397,7 +401,7 @@ class DocumentErasureService:
         )
 
     async def _execute_locations(
-        self, tenant_id: str, doc_id: str, chunk_ids: list[str]
+        self, tenant_id: str, doc_id: str, chunk_ids: list[str], scope_key: str
     ) -> list[LocationOutcome]:
         outcomes: list[LocationOutcome] = []
 
@@ -467,11 +471,17 @@ class DocumentErasureService:
         outcomes.append(
             LocationOutcome("audit", doc_id, _ACTIONS["audit"], "SKIPPED", "未接入 KMS/主体级 DEK")
         )
-        outcomes.append(
-            LocationOutcome(
-                "backup", doc_id, _ACTIONS["backup"], "SKIPPED", "未接入备份介质与密钥销毁"
+        try:
+            backup = await self._backup.notify_erasure(
+                tenant_id, scope_type="document", scope_key=scope_key
             )
-        )
+            outcomes.append(
+                LocationOutcome("backup", doc_id, _ACTIONS["backup"], backup.status, backup.detail)
+            )
+        except Exception as exc:  # noqa: BLE001
+            outcomes.append(
+                LocationOutcome("backup", doc_id, _ACTIONS["backup"], "FAILED", str(exc))
+            )
 
         # 9. 精选问答：标脏并重新审核
         try:

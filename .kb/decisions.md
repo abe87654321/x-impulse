@@ -170,3 +170,217 @@ FR-04-14a 规定缓存「问题哈希 → 已召回 chunk_id 列表」，**不�
 **不修的理由**：以上均需要外部基础设施（对象存储、KMS、备份系统、分词/嵌入服务）
 或客户合规确认，当前先保证链路与证据结构成立。任何「已彻底删除」的对外表述
 都与本决策冲突。
+
+---
+
+## A-16 · 限流/配额的本期挂载点与状态边界
+
+| | |
+| --- | --- |
+| 记录日期 | 2026-10-31 |
+| 状态 | ✅ **已接受**（本期实现边界） |
+| 影响设计文件 | 无 |
+
+**实现**：FR-16-01/02/03（分层限流、抽取检测、429 + Retry-After）已落地；
+FR-16-04 只做最小计量（调用次数、答案字符数、模型上报的 token 数）；
+FR-16-05（索引侧 GPU 资源隔离）不在代码层实现，属部署编排。
+
+**两条边界必须记住**
+
+1. **阈值走环境配置而非 `deployment_profiles`。**
+   `deployment_profiles` 未含限流字段，而 TD-01 §12 M-2 禁止改基线 schema；
+   本期没有增量迁移机制，直接加列会制造第二套建表真相。
+   待部署档案真正承载档次参数时，再把 `KB_RATE_LIMIT_*` 迁进档案。
+   在此之前不得在业务代码里散落硬编码阈值。
+2. **限流与计量状态默认在进程内，只适合单进程开发/演示。**
+   生产必须注入共享存储（`WindowStore` / `UsageMeter`），否则多副本
+   各自计数会放宽限制，违反架构 §5.13 的意图。这不是安全边界的妥协，
+   而是与 `InMemoryVectorStore` / `InMemoryQueryCache` 同级的开发默认值。
+
+**未覆盖**：批量抽取的「历史基线数倍」目前用绝对阈值近似，
+真实基线需积累访问数据后再做；在此之前不得声称已实现基线学习。
+
+---
+
+## A-17 · 重排开关与召回基线的交付边界
+
+| | |
+| --- | --- |
+| 记录日期 | 2026-10-31 |
+| 状态 | ✅ **已接受**（本期实现边界） |
+| 影响设计文件 | 无 |
+
+**实现**：`kb/retrieval/rerank.py` 提供 Cross-Encoder 适配器与显式开关；
+`kb/retrieval/evaluation.py` 提供 recall@10 / recall@50 基线、对照判定与
+`eval_cases` 读取。重排默认关闭，`rerank_enabled=True` 但未注入重排器时
+构造直接报错，不静默无重排。
+
+**关键边界**
+
+1. **是否启用重排不能只看 recall 差值，必须同时有开关对照。**
+   `decide_rerank` 的判定顺序：差值低于阈值 → 关闭；缺少对照 → 关闭；
+   开启后 recall@10 无实测提升 → 关闭。这是 FR-04-08 阻断性验收的代码化。
+2. **基线不落库。** 不新增表（schema 冻结，M-2），基线以
+   `RetrievalBaseline.to_json()` 输出，交给 FR-10-03 回归报告归档。
+   将来若需要版本化基线历史，再按 §10 六问清单评估新表。
+3. **真实启用仍阻塞于客户评测集与模型实测（Q-16）。**
+   本期交付的是测量与判定工具；没有客户评测集时不得给出"重排已启用"的结论。
+
+---
+
+## A-18 · 审计日志 PII 字段加密（补齐 A-15 的未覆盖项之一）
+
+| | |
+| --- | --- |
+| 记录日期 | 2026-10-31 |
+| 状态 | ✅ **已实现**（软件 KEK 范围） |
+| 影响设计文件 | 无 |
+
+**实现**：`kb/audit/protection.py` 只加密审计 payload 中识别出的 PII 片段，
+结构、非 PII 内容与哈希链保持完整。多个主体出现在同一 payload 时逐片段
+各用其主体 DEK —— 不能整段多密钥封装，否则销毁一个主体密钥后另一个
+密钥仍能解开整段。`PostgresAuditStore` 在未配置加密但 payload 含 PII 时
+**拒绝写入**，不静默落明文。
+
+**接线**：`build_audit_store_from_env` 读取 `KB_KEK_BASE64` +
+`KB_AUDIT_PII_PEPPER`（可回退 `KB_SUPPRESSION_PEPPER`）。只配一半视为
+配置错误。未配置且 payload 无 PII 时保持原有明文行为。
+
+**仍然成立的边界**
+
+- 使用软件 KEK，不满足 FR-11-04；生产必须换 KMS/密码模块（E-1、E-3）。
+- 备份轮转仍未接入，删除证明的未覆盖声明必须保留这一条。
+- PII 识别仍只覆盖手机/身份证/邮箱/银行卡四类正则；姓名等靠模型识别的
+  类型不在本期，审计加密的召回上限随之受限。
+
+---
+
+## A-19 · 备份轮转接口的边界（补齐 A-15 的备份未覆盖项）
+
+| | |
+| --- | --- |
+| 记录日期 | 2026-10-31 |
+| 状态 | ✅ **接口已实现**；真实介质销毁仍属外部系统 |
+| 影响设计文件 | 无 |
+
+**实现**：`kb/compliance/backup.py` 定义 `BackupRotation` 协议：
+删除时登记 `(tenant, scope_type, scope_key)`，按配置的轮转周期给出到期时间；
+`rotate()` 由外部调度器调用，返回已到期条目数。文档级与主体级删除链路都已接入，
+删除证明的 `backup` 位置不再固定为 SKIPPED。
+
+**必须保持诚实的三点**
+
+1. **`TrackingBackupRotation` 只做记账，不销毁介质。** 它记录删除范围与
+   轮转到期时间；实际备份系统的受限处理与介质处置仍由外部完成。
+2. **轮转周期必须显式配置（E-3 未决）。** `KB_BACKUP_ROTATION_DAYS` 缺省时
+   使用 `UnconfiguredBackupRotation`，删除证明写 SKIPPED，不假装已处理。
+   不得在代码里给一个"看起来合理"的默认周期。
+3. **对客话术不得声称备份已物理清除。** 只可陈述：受限处理 + N 天轮转到期 +
+   恢复时比对抑制清单。`client_statement()` 强制包含"不宣称"。
+
+---
+
+## A-20 · KMS 接缝与恢复演练闸门
+
+| | |
+| --- | --- |
+| 记录日期 | 2026-10-31 |
+| 状态 | ✅ **接缝与假实现已交付**；真实厂商适配器待接入 |
+| 影响设计文件 | 无 |
+
+**实现**
+- `kb/compliance/kms.py`：`KmsClient` / `SubjectKeyStore` 两个可替换接缝，
+  `KmsKeyManager` 做信封加密，`FakeKmsClient` 供测试。
+  `subject_keys.dek_ref` 存 `{key_ref, wrapped}`，KMS 侧密钥销毁后
+  `unwrap` 永久失败——即使数据库从删除前的备份恢复也无法复活密钥。
+- `kb/compliance/restore.py`：`RestoreGuard` 在恢复后比对文档抑制键、
+  主体抑制键与 KMS 销毁状态，有任一命中即 `RestoreViolation`，拒绝放行。
+
+**必须守住的前提**
+1. 真实 KMS 适配器必须让“密钥状态”只存在于 KMS/HSM，不得把可恢复的
+   密钥副本留在业务库或同一份备份里。
+2. 抑制清单与密钥销毁状态必须在恢复范围之外保持权威；否则恢复会回滚删除。
+3. `RestoreGuard` 只扫描与阻断，不自动删除；清理在隔离环境由人/编排执行。
+4. `FakeKmsClient` 只在进程内，绝不能配置到生产；进程重启后状态丢失。
+
+---
+
+## A-21 · 备份策略设为 6 个可管理设置项（DAG 求值）
+
+| | |
+| --- | --- |
+| 记录日期 | 2026-10-31 |
+| 状态 | ✅ **设置模型与求值器已实现**；管理面 UI/持久化待接入 |
+| 影响设计文件 | 无 |
+
+**实现**
+- `kb/governance/settings_dag.py`：通用 `SettingsDAG`，按依赖拓扑序求值，
+  检测环与未知依赖；缺失项用 `recommended` 并标记来源 `recommended`。
+- `kb/compliance/backup_policy.py`：备份 6 项设置、推荐默认、交叉校验，
+  以及 `build_rotation_from_policy`。
+- 安全组合直接判错：`authority_store=db_only`、`backup_encryption=none`
+  或 `single_long_lived`、备份已启用但调度器/持久化位置为 `none`。
+
+**推荐默认值**
+
+| 设置项 | 推荐 |
+| --- | --- |
+| backup_system | database_pitr |
+| rotation_days | 90 |
+| persistence_location | external_catalog |
+| scheduler | k8s_cronjob |
+| backup_encryption | subject_dek |
+| authority_store | kms_and_external_db |
+
+**边界**：推荐值不是合规结论。管理面必须把 `sources=recommended` 显示为
+“待确认”，不能当作管理员已批准；E-3 的轮转周期仍需客户确认。
+
+---
+
+## A-22 · 备份目录的领域层架构、设置项扩展与管理面 API
+
+| | |
+| --- | --- |
+| 记录日期 | 2026-10-31 |
+| 状态 | ✅ **领域端口/适配器/注册表已实现**；真实厂商适配器待接 |
+| 影响设计文件 | 无（新增迁移 `0002_service_settings.sql`） |
+
+**领域层**（`kb/compliance/backup_domain.py`）
+- `BackupGeneration` / `BackupCatalog` 端口 / `CatalogBackupRotation`。
+- 领域层不关心备份是数据库 PITR、对象存储、VM 快照还是第三方平台。
+
+**适配器层**（`kb/compliance/backup_adapters.py`）
+- `ManifestBackupCatalog`（本地/对象存储 manifest）、`HttpBackupCatalog`
+  （通用目录 API）、`InMemoryBackupCatalog`（测试）。
+- `BackupCatalogRegistry` 按 `(provider, mode)` 注册；新增厂商只需实现
+  `BackupCatalog` 并注册工厂，不改领域层与轮转语义。
+
+**设置项扩展**
+- 新增 `tenant_isolation`（per_tenant/shared/global）、`catalog_mode`
+  （manifest/http_api）、`manifest_uri`、`catalog_endpoint`、`catalog_credential_ref`。
+- 凭据只存**引用名**，不存密钥；真实凭据由部署层/KMS 提供。
+
+**管理面**
+- `service_settings` 表（迁移，不修改 schema.sql）保存管理员覆盖值。
+- `BackupSettingsService` 负责角色授权、DAG 校验、审计与审批接缝。
+- 管理 API：schema / snapshot / PUT / proposals（`kb/api/admin_settings.py`）。
+- **Agent 只能调用 proposals 生成提案，不能执行 PUT**（A-13 / N-7）。
+  这是刻意保留的边界，不因“方便”而放宽。
+
+---
+
+## A-24 · 备份 manifest 文件与生成工具
+
+| | |
+| --- | --- |
+| 记录日期 | 2026-10-31 |
+| 状态 | ✅ 已实现 |
+| 影响设计文件 | 无 |
+
+- 新增 `config/backup_manifest.jsonl`（示例/模板）与 `config/README.md`（字段说明）。
+- 新增 `kb/backup_manifest.py`：`init` / `append` / `validate`，避免手写 JSONL 出错。
+- `kb/backup_drill.py` 默认**不覆盖**已存在的 manifest；只有文件不存在或显式
+  `--regenerate` 才生成演示数据。新增 `--manifest-tenant` 区分轮转租户与演练租户。
+
+**边界**：`config/backup_manifest.jsonl` 是示例，不是真实备份记录；
+真实 manifest 应由备份任务生成，且不得写入密钥本身，只写密钥引用。

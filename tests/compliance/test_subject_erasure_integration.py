@@ -7,6 +7,7 @@ import json
 
 import pytest
 
+from kb.compliance.backup import TrackingBackupRotation
 from kb.compliance.crypto import KeyDestroyedError, SoftwareKeyManager, kek_from_passphrase
 from kb.compliance.pii import detect_pii, subject_key
 from kb.compliance.subject_erasure import SubjectErasureService
@@ -183,6 +184,7 @@ def test_subject_erasure_removes_chunks_and_redacts_texts():
             pepper=PEPPER,
             collection=COLLECTION,
             key_manager=key_manager,
+            backup=TrackingBackupRotation(rotation_days=90),
         )
         result = asyncio.run(
             service.erase_subject(

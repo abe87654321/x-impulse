@@ -5,7 +5,13 @@ from kb.indexing.deletion import (
     DeletionResult,
     DocumentDeletionService,
 )
-from kb.indexing.embedding import Embedder, HashingEmbedder
+from kb.indexing.embedding import (
+    Embedder,
+    EmbeddingConfigError,
+    HashingEmbedder,
+    SentenceTransformerEmbedder,
+    build_embedder_from_env,
+)
 from kb.indexing.ids import acl_id, chunk_id, document_id
 from kb.indexing.models import (
     ChunkVectorEntry,
@@ -47,6 +53,7 @@ __all__ = [
     "DocumentDeletionService",
     "DocumentStore",
     "Embedder",
+    "EmbeddingConfigError",
     "HashingEmbedder",
     "InMemorySuppressionChecker",
     "InMemoryVectorStore",
@@ -59,6 +66,7 @@ __all__ = [
     "PostgresSuppressionChecker",
     "PreparedChunk",
     "PreparedDocument",
+    "SentenceTransformerEmbedder",
     "SourceSyncService",
     "StoredDocument",
     "QdrantVectorStore",
@@ -72,6 +80,7 @@ __all__ = [
     "VectorPoint",
     "VectorStore",
     "acl_id",
+    "build_embedder_from_env",
     "chunk_id",
     "document_id",
 ]
