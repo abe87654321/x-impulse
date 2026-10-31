@@ -102,6 +102,8 @@ def test_resolve_returns_typed_policy():
         manifest_uri=None,
         catalog_endpoint=None,
         catalog_credential_ref=None,
+        catalog_bucket=None,
+        catalog_prefix=None,
         backup_encryption="subject_dek",
         authority_store="kms_and_external_db",
     )
@@ -128,6 +130,32 @@ def test_http_catalog_mode_requires_endpoint_and_credential_ref():
     assert resolved.ready is False
     assert any("catalog_endpoint" in error for error in resolved.errors)
     assert any("catalog_credential_ref" in error for error in resolved.errors)
+
+
+def test_s3_mode_requires_bucket_endpoint_and_credential_ref():
+    resolved = evaluate_backup_policy({"catalog_mode": "s3_api"})
+
+    assert resolved.ready is False
+    assert any("catalog_bucket" in error for error in resolved.errors)
+    assert any("catalog_endpoint" in error for error in resolved.errors)
+    assert any("catalog_credential_ref" in error for error in resolved.errors)
+
+
+def test_s3_mode_accepts_explicit_bucket_and_prefix():
+    resolved = evaluate_backup_policy(
+        {
+            "backup_system": "object_storage",
+            "catalog_mode": "s3_api",
+            "catalog_endpoint": "https://s3.example.com",
+            "catalog_credential_ref": "kms://backup-s3",
+            "catalog_bucket": "kb-backups",
+            "catalog_prefix": "prod",
+        }
+    )
+
+    assert resolved.ready is True
+    assert resolved.values["catalog_bucket"] == "kb-backups"
+    assert resolved.values["catalog_prefix"] == "prod"
 
 
 def test_http_endpoint_scheme_is_validated():

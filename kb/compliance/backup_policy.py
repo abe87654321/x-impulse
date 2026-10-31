@@ -34,7 +34,7 @@ SCHEDULERS = ("none", "external_cron", "k8s_cronjob", "ops_platform")
 ENCRYPTION_MODES = ("none", "single_long_lived", "backup_key", "subject_dek")
 AUTHORITY_STORES = ("db_only", "kms_only", "kms_and_external_db")
 TENANT_ISOLATIONS = ("per_tenant", "shared", "global")
-CATALOG_MODES = ("manifest", "http_api")
+CATALOG_MODES = ("manifest", "http_api", "s3_api")
 
 
 def _backup_enabled(values: Mapping[str, object]) -> bool:
@@ -156,21 +156,40 @@ def backup_settings_dag() -> SettingsDAG:
             ),
             SettingSpec(
                 key="catalog_endpoint",
-                title="目录 API 地址",
+                title="目录 API / S3 地址",
                 kind="string",
                 depends_on=("catalog_mode",),
                 applies_when=lambda values: (
-                    _backup_enabled(values) and values.get("catalog_mode") == "http_api"
+                    _backup_enabled(values) and values.get("catalog_mode") in ("http_api", "s3_api")
                 ),
                 check=_check_endpoint,
             ),
             SettingSpec(
                 key="catalog_credential_ref",
-                title="目录 API 凭据引用（只存引用名，不存密钥）",
+                title="目录 API / S3 凭据引用（只存引用名，不存密钥）",
                 kind="string",
                 depends_on=("catalog_mode",),
                 applies_when=lambda values: (
-                    _backup_enabled(values) and values.get("catalog_mode") == "http_api"
+                    _backup_enabled(values) and values.get("catalog_mode") in ("http_api", "s3_api")
+                ),
+            ),
+            SettingSpec(
+                key="catalog_bucket",
+                title="S3 备份桶",
+                kind="string",
+                depends_on=("catalog_mode",),
+                applies_when=lambda values: (
+                    _backup_enabled(values) and values.get("catalog_mode") == "s3_api"
+                ),
+            ),
+            SettingSpec(
+                key="catalog_prefix",
+                title="S3 备份前缀",
+                kind="string",
+                recommended="kb-backups/",
+                depends_on=("catalog_mode",),
+                applies_when=lambda values: (
+                    _backup_enabled(values) and values.get("catalog_mode") == "s3_api"
                 ),
             ),
             SettingSpec(
@@ -205,6 +224,8 @@ class BackupPolicy:
     manifest_uri: str | None
     catalog_endpoint: str | None
     catalog_credential_ref: str | None
+    catalog_bucket: str | None
+    catalog_prefix: str | None
     backup_encryption: str
     authority_store: str
 
@@ -228,6 +249,8 @@ def resolve_backup_policy(overrides: Mapping[str, object]) -> BackupPolicy:
         manifest_uri=_optional_str(values.get("manifest_uri")),
         catalog_endpoint=_optional_str(values.get("catalog_endpoint")),
         catalog_credential_ref=_optional_str(values.get("catalog_credential_ref")),
+        catalog_bucket=_optional_str(values.get("catalog_bucket")),
+        catalog_prefix=_optional_str(values.get("catalog_prefix")),
         backup_encryption=str(values["backup_encryption"]),
         authority_store=str(values["authority_store"]),
     )
@@ -256,6 +279,8 @@ def build_rotation_from_policy(
         "manifest_uri": policy.manifest_uri,
         "catalog_endpoint": policy.catalog_endpoint,
         "catalog_credential_ref": policy.catalog_credential_ref,
+        "catalog_bucket": policy.catalog_bucket,
+        "catalog_prefix": policy.catalog_prefix,
     }
     catalog = (registry or default_backup_registry()).create(
         policy.backup_system,

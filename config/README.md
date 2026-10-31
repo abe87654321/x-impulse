@@ -52,3 +52,35 @@
 - 本文件里的是**示例数据**，不是真实备份。真实备份清单应由备份任务生成。
 - manifest 模式的 `rotate` 只报告到期，不删除真实介质；删除由对象存储生命周期/备份系统执行。
 - 不要把真实备份密钥写进 manifest，只写密钥引用。
+
+## S3 兼容对象存储目录（`catalog_mode=s3_api`）
+
+每个租户使用独立前缀，备份任务必须按下面的约定写入：
+
+```
+s3://<bucket>/<prefix>/<tenant_id>/<backup_id>/kb-manifest.json
+s3://<bucket>/<prefix>/<tenant_id>/<backup_id>/<其它数据对象...>
+```
+
+`kb-manifest.json` 是目录索引，内容与 manifest 行一致：
+
+```json
+{
+  "backup_id": "b-20261031",
+  "tenant_id": "default",
+  "created_at": "2026-10-31T00:00:00+00:00",
+  "expires_at": "2027-01-29T00:00:00+00:00",
+  "scope": "tenant",
+  "encryption_key_ref": "kms://backup-key-1",
+  "status": "available"
+}
+```
+
+- `list_generations` 只列当前租户前缀，并且要求 manifest 的 `tenant_id` 与
+  `backup_id`（目录名）一致，否则拒绝。
+- `expire` 只删除**指定租户 + 指定 backup_id** 前缀下的对象；不会跨租户。
+- 凭据只从环境读取：`KB_S3_ENDPOINT`、`KB_S3_REGION`、
+  `KB_S3_ACCESS_KEY_ID`、`KB_S3_SECRET_ACCESS_KEY`（可选
+  `KB_S3_SESSION_TOKEN`），设置表只存 `catalog_credential_ref` 引用名。
+- `expire` 是真实的 `DeleteObjects`；若希望由桶生命周期而非应用删除，
+  不要把 `s3_api` 配上自动轮转。删除后仍须保留 A-19 的诚实表述。

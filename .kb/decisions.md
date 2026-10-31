@@ -384,3 +384,53 @@ FR-16-05（索引侧 GPU 资源隔离）不在代码层实现，属部署编排�
 
 **边界**：`config/backup_manifest.jsonl` 是示例，不是真实备份记录；
 真实 manifest 应由备份任务生成，且不得写入密钥本身，只写密钥引用。
+
+---
+
+## A-25 · 备份恢复演练的 KMS 选择：默认只用假 KMS
+
+| | |
+| --- | --- |
+| 记录日期 | 2026-10-31 |
+| 状态 | ✅ 已实现 |
+| 影响设计文件 | 无 |
+
+**实现**：`kb/backup_drill.py` 新增 `build_drill_kms()` 与 `--kms {fake,vault}`。
+默认 `fake`；`vault` 必须显式选择，经 `build_kms_from_env()` 读取部署凭据，
+配置缺失即报错（不降级）。
+
+**为什么默认不切真实 KMS**：演练会**销毁密钥**。若默认指向真实 KMS，
+一次本地演练就会销毁生产主体密钥，造成不可逆的数据不可解。
+真实 KMS 只允许在非生产 Vault 实例/命名空间上、由操作者显式选择后使用。
+
+**边界**：`--kms vault` 不提供任何“演练模式”豁免 —— 它执行的就是真实
+`destroy_key`。文档与帮助文本必须保持这一警告。
+
+---
+
+## A-26 · S3 兼容备份目录的接入方式与租户边界
+
+| | |
+| --- | --- |
+| 记录日期 | 2026-10-31 |
+| 状态 | ✅ 已实现（真实 S3 适配器 + SigV4） |
+| 影响设计文件 | 无（新增 `catalog_mode=s3_api` 设置） |
+
+**实现**
+- `kb/compliance/backup_s3.py`：`S3BackupCatalog`、`UrllibS3Transport`
+  （path-style + SigV4，不引入 boto3）、`build_s3_transport_from_env`。
+- 目录约定：`s3://<bucket>/<prefix>/<tenant_id>/<backup_id>/kb-manifest.json`，
+  同前缀下其它对象属于该代次。`list_generations` 校验 manifest 的租户与
+  `backup_id` 必须与路径一致；`expire` 只删指定租户 + 指定代次前缀。
+- 新增设置 `catalog_bucket` / `catalog_prefix`，`catalog_mode` 增加 `s3_api`；
+  `catalog_endpoint` / `catalog_credential_ref` 同时适用于 `s3_api`。
+- 凭据只从部署环境注入，设置表仍只存引用名。
+
+**领域端口修正（安全）**：`BackupCatalog.expire` 现在必须显式传入
+`tenant_id`。旧签名只有 `backup_ids`，而 `CatalogBackupRotation.rotate(tenant_id)`
+拿不到租户，导致 HTTP 适配器过去以空租户调用 expire —— 对 per_tenant
+存储这是跨租户删除的隐患。新增 S3 适配器必须先修这个接缝。
+
+**边界**：`expire` 执行真实 `DeleteObjects`，不是记账；若由桶生命周期负责
+介质删除，就不要把自动轮转指向 `s3_api`。manifest 布局是本项目的约定，
+备份任务必须按此写入；不声称兼容未提供的厂商私有布局。

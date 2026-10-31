@@ -33,6 +33,15 @@ from kb.compliance.backup_policy import (
     evaluate_backup_policy,
     resolve_backup_policy,
 )
+from kb.compliance.backup_s3 import (
+    S3BackupCatalog,
+    S3NotFoundError,
+    S3ObjectSummary,
+    S3Transport,
+    S3TransportError,
+    UrllibS3Transport,
+    build_s3_transport_from_env,
+)
 from kb.compliance.crypto import (
     KeyDestroyedError,
     KeyManager,
@@ -105,6 +114,12 @@ __all__ = [
     "RestoreGuard",
     "RestoreReport",
     "RestoreViolation",
+    "S3BackupCatalog",
+    "S3NotFoundError",
+    "S3ObjectSummary",
+    "S3Transport",
+    "S3TransportError",
+    "UrllibS3Transport",
     "SubjectKeyStore",
     "RestrictionService",
     "KeyDestroyedError",
@@ -134,6 +149,7 @@ __all__ = [
     "backup_settings_dag",
     "default_backup_registry",
     "build_backup_rotation_from_env",
+    "build_s3_transport_from_env",
     "build_rotation_from_policy",
     "evaluate_backup_policy",
     "resolve_backup_policy",

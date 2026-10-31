@@ -21,6 +21,7 @@ from kb.compliance.backup_domain import (
     BackupCatalogError,
     BackupGeneration,
 )
+from kb.compliance.backup_s3 import S3BackupCatalog, S3Transport
 
 
 class ManifestSource(Protocol):
@@ -50,8 +51,8 @@ class InMemoryBackupCatalog:
             and (generation.scope != "tenant" or generation.tenant_id == tenant_id)
         ]
 
-    async def expire(self, backup_ids: Sequence[str], *, evidence: str) -> int:
-        del evidence
+    async def expire(self, backup_ids: Sequence[str], *, tenant_id: str, evidence: str) -> int:
+        del tenant_id, evidence
         self.expire_calls += 1
         self.expired.update(backup_ids)
         return len(backup_ids)
@@ -98,8 +99,8 @@ class ManifestBackupCatalog:
                 result.append(generation)
         return result
 
-    async def expire(self, backup_ids: Sequence[str], *, evidence: str) -> int:
-        del evidence
+    async def expire(self, backup_ids: Sequence[str], *, tenant_id: str, evidence: str) -> int:
+        del tenant_id, evidence
         self._expired.update(backup_ids)
         return len(backup_ids)
 
@@ -131,12 +132,16 @@ class HttpBackupCatalog:
         items = _items(payload)
         return [_parse_generation(item) for item in items]
 
-    async def expire(self, backup_ids: Sequence[str], *, evidence: str) -> int:
+    async def expire(self, backup_ids: Sequence[str], *, tenant_id: str, evidence: str) -> int:
         payload = await self._transport.request(
             "POST",
             f"{self._endpoint}/expire",
-            tenant_id="",
-            body={"backup_ids": list(backup_ids), "evidence": evidence},
+            tenant_id=tenant_id,
+            body={
+                "tenant_id": tenant_id,
+                "backup_ids": list(backup_ids),
+                "evidence": evidence,
+            },
         )
         if not isinstance(payload, Mapping):
             raise BackupCatalogError("目录 API expire 返回不是对象")
@@ -185,6 +190,7 @@ class UrllibHttpTransport:
 class CatalogDependencies:
     manifest_source: ManifestSource | None = None
     http_transport: HttpTransport | None = None
+    s3_transport: S3Transport | None = None
 
 
 CatalogFactory = Callable[[Mapping[str, object], CatalogDependencies], BackupCatalog]
@@ -216,6 +222,7 @@ def default_backup_registry() -> BackupCatalogRegistry:
     for provider in providers:
         registry.register(provider, "manifest", _manifest_factory)
         registry.register(provider, "http_api", _http_factory)
+        registry.register(provider, "s3_api", _s3_factory)
     return registry
 
 
@@ -245,6 +252,21 @@ def _http_factory(
         transport,
         endpoint=endpoint,
         credential_ref=credential_ref if isinstance(credential_ref, str) else None,
+    )
+
+
+def _s3_factory(settings: Mapping[str, object], dependencies: CatalogDependencies) -> BackupCatalog:
+    transport = dependencies.s3_transport
+    if transport is None:
+        raise BackupCatalogError("s3_api 模式必须注入 S3Transport（凭据由部署层提供）")
+    bucket = settings.get("catalog_bucket")
+    if not isinstance(bucket, str) or not bucket.strip():
+        raise BackupCatalogError("catalog_bucket 未配置")
+    prefix = settings.get("catalog_prefix")
+    return S3BackupCatalog(
+        transport,
+        bucket=bucket,
+        prefix=prefix if isinstance(prefix, str) else "",
     )
 
 

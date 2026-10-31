@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -26,7 +27,13 @@ from kb.compliance.backup_policy import (
     build_rotation_from_policy,
     resolve_backup_policy,
 )
-from kb.compliance.kms import FakeKmsClient, KmsKeyManager, PostgresSubjectKeyStore
+from kb.compliance.kms import (
+    FakeKmsClient,
+    KmsClient,
+    KmsKeyManager,
+    PostgresSubjectKeyStore,
+)
+from kb.compliance.kms_vault import KmsConfigError, build_kms_from_env
 from kb.compliance.pii import subject_key
 from kb.compliance.restore import (
     PostgresRestoreCatalog,
@@ -108,15 +115,37 @@ def _cleanup(db: Database, tenant_id: str) -> None:
     db.execute("DELETE FROM tenants WHERE tenant_id = $1", tenant_id)
 
 
-def _prepare_manifest(raw: str, tenant_id: str, now: datetime, *, regenerate: bool = False) -> Path:
+def build_drill_kms(source: str = "fake", environ: Mapping[str, str] | None = None) -> KmsClient:
+    """选择演练用 KMS。
+
+    默认 `fake`：演练会**销毁**密钥，绝不能默认打到真实 KMS。
+    `vault` 必须显式选择，且只应指向非生产的 Vault 实例/命名空间。
+    """
+    if source == "fake":
+        return FakeKmsClient()
+    if source == "vault":
+        return build_kms_from_env(environ)
+    raise KmsConfigError(f"未知演练 KMS：{source}")
+
+
+def _prepare_manifest(
+    raw: str,
+    tenant_id: str,
+    now: datetime,
+    *,
+    regenerate: bool = False,
+    key_ref: str = "fake-kms://drill",
+) -> Path:
     path = Path(raw).expanduser().resolve()
     if path.exists() and not regenerate:
         return path
-    _write_manifest(path, tenant_id, now)
+    _write_manifest(path, tenant_id, now, key_ref=key_ref)
     return path
 
 
-def _write_manifest(path: Path, tenant_id: str, now: datetime) -> None:
+def _write_manifest(
+    path: Path, tenant_id: str, now: datetime, *, key_ref: str = "fake-kms://drill"
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     rows = [
         {
@@ -125,7 +154,7 @@ def _write_manifest(path: Path, tenant_id: str, now: datetime) -> None:
             "created_at": (now - timedelta(days=100)).isoformat(),
             "expires_at": (now - timedelta(days=1)).isoformat(),
             "scope": "tenant",
-            "encryption_key_ref": "fake-kms://drill",
+            "encryption_key_ref": key_ref,
             "status": "available",
         },
         {
@@ -134,7 +163,7 @@ def _write_manifest(path: Path, tenant_id: str, now: datetime) -> None:
             "created_at": now.isoformat(),
             "expires_at": (now + timedelta(days=30)).isoformat(),
             "scope": "tenant",
-            "encryption_key_ref": "fake-kms://drill",
+            "encryption_key_ref": key_ref,
             "status": "available",
         },
         {
@@ -162,6 +191,8 @@ async def run(args: argparse.Namespace) -> int:
     if not tenant_id.startswith("drill_"):
         raise SystemExit("为安全起见，演练租户必须以 drill_ 开头")
     manifest_tenant = getattr(args, "manifest_tenant", None) or tenant_id
+    kms_source = getattr(args, "kms", "fake")
+    key_ref = "vault-transit://drill" if kms_source == "vault" else "fake-kms://drill"
 
     dsn = args.dsn or dsn_from_env()
     now = datetime.now(UTC)
@@ -171,6 +202,7 @@ async def run(args: argparse.Namespace) -> int:
         tenant_id,
         now,
         regenerate=getattr(args, "regenerate", False),
+        key_ref=key_ref,
     )
     db = Database(dsn)
 
@@ -215,7 +247,7 @@ async def run(args: argparse.Namespace) -> int:
         print("说明：manifest 模式只报告到期；真实介质删除由存储生命周期执行。")
 
         print("\n== 恢复演练 ==")
-        key_manager = KmsKeyManager(FakeKmsClient(), PostgresSubjectKeyStore(dsn))
+        key_manager = KmsKeyManager(build_drill_kms(kms_source), PostgresSubjectKeyStore(dsn))
         await key_manager.register(tenant_id, _hasher(PHONE))
         await key_manager.destroy(tenant_id, _hasher(PHONE), "drill")
         guard = RestoreGuard(
@@ -253,6 +285,12 @@ def main(argv: list[str] | None = None) -> int:
         help="manifest 中的租户；默认与演练租户相同",
     )
     parser.add_argument("--rotation-days", type=int, default=90)
+    parser.add_argument(
+        "--kms",
+        choices=("fake", "vault"),
+        default="fake",
+        help="演练 KMS；vault 会销毁真实密钥，只允许指向非生产实例",
+    )
     parser.add_argument(
         "--regenerate", action="store_true", help="覆盖已存在的 manifest（默认复用现有文件）"
     )

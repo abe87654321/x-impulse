@@ -45,7 +45,7 @@ class BackupCatalog(Protocol):
         self, tenant_id: str, *, now: datetime | None = None
     ) -> Sequence[BackupGeneration]: ...
 
-    async def expire(self, backup_ids: Sequence[str], *, evidence: str) -> int: ...
+    async def expire(self, backup_ids: Sequence[str], *, tenant_id: str, evidence: str) -> int: ...
 
 
 class CatalogBackupRotation:
@@ -110,7 +110,7 @@ class CatalogBackupRotation:
         if not due:
             return 0
         evidence = f"rotation:{self._isolation}:{moment.date().isoformat()}"
-        return await self._catalog.expire(due, evidence=evidence)
+        return await self._catalog.expire(due, tenant_id=tenant_id, evidence=evidence)
 
     def client_statement(self) -> str:
         return TrackingBackupRotation(rotation_days=self._rotation_days).client_statement()

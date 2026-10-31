@@ -139,7 +139,7 @@ async def test_http_catalog_uses_transport_and_expire_endpoint():
     )
 
     generations = await catalog.list_generations("t1", now=NOW)
-    expired = await catalog.expire(["api_b1"], evidence="rotation")
+    expired = await catalog.expire(["api_b1"], tenant_id="t1", evidence="rotation")
 
     assert [generation.backup_id for generation in generations] == ["api_b1"]
     assert expired == 1
