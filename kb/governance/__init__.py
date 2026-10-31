@@ -24,6 +24,7 @@ from kb.governance.settings_dag import (
 )
 from kb.governance.settings_service import (
     ALL_ROLES,
+    CONSULTANT_WRITE_UNTIL_ENV,
     DEFAULT_SETTINGS_READERS,
     DEFAULT_SETTINGS_WRITERS,
     ROLE_EMPLOYEE,
@@ -38,6 +39,8 @@ from kb.governance.settings_service import (
     NoApprovalPolicy,
     SettingsChangeResult,
     SettingsWriteDenied,
+    build_settings_service_from_env,
+    consultant_write_until_from_env,
 )
 from kb.governance.settings_store import (
     InMemorySettingsStore,
@@ -54,6 +57,7 @@ __all__ = [
     "ApprovalPolicy",
     "ApprovalRequired",
     "BackupSettingsService",
+    "CONSULTANT_WRITE_UNTIL_ENV",
     "DEFAULT_SETTINGS_READERS",
     "DEFAULT_SETTINGS_WRITERS",
     "InMemorySettingsStore",
@@ -79,5 +83,7 @@ __all__ = [
     "UsageMeter",
     "UsageRecord",
     "WindowStore",
+    "build_settings_service_from_env",
+    "consultant_write_until_from_env",
     "usage_record",
 ]

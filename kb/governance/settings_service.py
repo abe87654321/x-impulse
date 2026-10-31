@@ -6,7 +6,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+import os
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
@@ -35,6 +36,7 @@ DEFAULT_SETTINGS_WRITERS = frozenset({ROLE_SYSTEM_ADMIN, ROLE_IMPLEMENTATION_CON
 DEFAULT_SETTINGS_READERS = frozenset(
     {ROLE_SYSTEM_ADMIN, ROLE_SECURITY_AUDITOR, ROLE_IMPLEMENTATION_CONSULTANT}
 )
+CONSULTANT_WRITE_UNTIL_ENV = "KB_CONSULTANT_WRITE_UNTIL"
 
 
 class SettingsWriteDenied(Exception):
@@ -83,12 +85,28 @@ class BackupSettingsService:
         approval: ApprovalPolicy | None = None,
         writers: frozenset[str] = DEFAULT_SETTINGS_WRITERS,
         readers: frozenset[str] = DEFAULT_SETTINGS_READERS,
+        consultant_write_until: datetime | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
+        if consultant_write_until is not None and consultant_write_until.tzinfo is None:
+            raise ValueError("consultant_write_until 必须带时区")
         self._store = store
         self._audit = audit
         self._approval: ApprovalPolicy = approval or NoApprovalPolicy()
         self._writers = writers
         self._readers = readers
+        self._consultant_write_until = consultant_write_until
+        self._clock = clock or (lambda: datetime.now(UTC))
+
+    def consultant_can_write(self) -> bool:
+        """FR-06-05：实施顾问只在显式 POC 窗口内可写，否则只读。"""
+        if ROLE_IMPLEMENTATION_CONSULTANT not in self._writers:
+            return False
+        deadline = self._consultant_write_until
+        return deadline is not None and self._clock() < deadline
+
+    def consultant_read_only(self) -> bool:
+        return not self.consultant_can_write()
 
     async def snapshot(self, tenant_id: str) -> ResolvedSettings:
         """内部读取（启动装配用）；管理面读取用 `snapshot_for`。"""
@@ -122,7 +140,7 @@ class BackupSettingsService:
         updated_by: str,
         approved_by: str | None = None,
     ) -> SettingsChangeResult:
-        self._require(roles, self._writers, "修改备份设置")
+        self._require(roles, self._effective_writers(), "修改备份设置")
         if not updates:
             raise ValueError("没有需要修改的设置项")
 
@@ -171,6 +189,11 @@ class BackupSettingsService:
             now=datetime.now(UTC),
         )
 
+    def _effective_writers(self) -> frozenset[str]:
+        if self.consultant_can_write():
+            return self._writers
+        return frozenset(role for role in self._writers if role != ROLE_IMPLEMENTATION_CONSULTANT)
+
     @staticmethod
     def _require(roles: Sequence[str], allowed: frozenset[str], action: str) -> None:
         if not set(roles).intersection(allowed):
@@ -179,12 +202,47 @@ class BackupSettingsService:
             )
 
 
+def consultant_write_until_from_env(
+    environ: Mapping[str, str] | None = None,
+) -> datetime | None:
+    """读取部署级 POC 写窗口；未配置即返回 None（顾问只读）。"""
+    env = os.environ if environ is None else environ
+    raw = env.get(CONSULTANT_WRITE_UNTIL_ENV, "").strip()
+    if not raw:
+        return None
+    try:
+        value = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"{CONSULTANT_WRITE_UNTIL_ENV} 必须是 ISO 8601 时间") from exc
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+def build_settings_service_from_env(
+    store: SettingsStore,
+    *,
+    audit: AuditStore | None = None,
+    approval: ApprovalPolicy | None = None,
+    environ: Mapping[str, str] | None = None,
+    clock: Callable[[], datetime] | None = None,
+) -> BackupSettingsService:
+    return BackupSettingsService(
+        store,
+        audit=audit,
+        approval=approval,
+        consultant_write_until=consultant_write_until_from_env(environ),
+        clock=clock,
+    )
+
+
 __all__ = [
     "ALL_ROLES",
     "ApprovalPolicy",
     "ApprovalRequired",
     "BackupSettingsService",
+    "CONSULTANT_WRITE_UNTIL_ENV",
     "DEFAULT_SETTINGS_READERS",
+    "build_settings_service_from_env",
+    "consultant_write_until_from_env",
     "DEFAULT_SETTINGS_WRITERS",
     "NoApprovalPolicy",
     "ROLE_EMPLOYEE",

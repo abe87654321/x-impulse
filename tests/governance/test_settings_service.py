@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
 from kb.audit.writer import AuditEvent
 from kb.governance.settings_dag import SettingsError
 from kb.governance.settings_service import (
     ROLE_EMPLOYEE,
+    ROLE_IMPLEMENTATION_CONSULTANT,
     ROLE_SECURITY_AUDITOR,
     ROLE_SYSTEM_ADMIN,
     ApprovalRequired,
     BackupSettingsService,
     SettingsWriteDenied,
+    build_settings_service_from_env,
+    consultant_write_until_from_env,
 )
 from kb.governance.settings_store import InMemorySettingsStore
 
@@ -144,3 +149,95 @@ async def test_empty_update_is_rejected():
 
     with pytest.raises(ValueError):
         await service.update([ROLE_SYSTEM_ADMIN], "t1", {}, updated_by="admin")
+
+
+def _clock_at(moment: datetime):
+    return lambda: moment
+
+
+async def test_consultant_can_write_inside_poc_window():
+    deadline = datetime(2026, 12, 31, tzinfo=UTC)
+    store = InMemorySettingsStore()
+    service = BackupSettingsService(
+        store,
+        consultant_write_until=deadline,
+        clock=_clock_at(deadline - timedelta(days=1)),
+    )
+
+    result = await service.update(
+        [ROLE_IMPLEMENTATION_CONSULTANT],
+        "t1",
+        {"rotation_days": 30},
+        updated_by="consultant",
+    )
+
+    assert result.settings.values["rotation_days"] == 30
+    assert service.consultant_can_write() is True
+
+
+async def test_consultant_becomes_read_only_at_deadline():
+    deadline = datetime(2026, 12, 31, tzinfo=UTC)
+    service = BackupSettingsService(
+        InMemorySettingsStore(),
+        consultant_write_until=deadline,
+        clock=_clock_at(deadline),
+    )
+
+    assert service.consultant_read_only() is True
+    with pytest.raises(SettingsWriteDenied):
+        await service.update(
+            [ROLE_IMPLEMENTATION_CONSULTANT],
+            "t1",
+            {"rotation_days": 30},
+            updated_by="consultant",
+        )
+    resolved = await service.snapshot_for([ROLE_IMPLEMENTATION_CONSULTANT], "t1")
+    assert resolved.ready is True
+
+
+async def test_consultant_is_read_only_without_explicit_window():
+    service = _service()
+
+    assert service.consultant_read_only() is True
+    with pytest.raises(SettingsWriteDenied):
+        await service.update(
+            [ROLE_IMPLEMENTATION_CONSULTANT],
+            "t1",
+            {"rotation_days": 30},
+            updated_by="consultant",
+        )
+
+
+async def test_system_admin_unaffected_by_consultant_expiry():
+    deadline = datetime(2026, 12, 31, tzinfo=UTC)
+    service = BackupSettingsService(
+        InMemorySettingsStore(),
+        consultant_write_until=deadline,
+        clock=_clock_at(deadline + timedelta(days=1)),
+    )
+
+    result = await service.update(
+        [ROLE_SYSTEM_ADMIN], "t1", {"rotation_days": 30}, updated_by="admin"
+    )
+
+    assert result.settings.values["rotation_days"] == 30
+
+
+def test_consultant_window_env_parsing():
+    assert consultant_write_until_from_env({}) is None
+    parsed = consultant_write_until_from_env({"KB_CONSULTANT_WRITE_UNTIL": "2026-12-31T00:00:00Z"})
+    assert parsed == datetime(2026, 12, 31, tzinfo=UTC)
+    naive = consultant_write_until_from_env({"KB_CONSULTANT_WRITE_UNTIL": "2026-12-31T00:00:00"})
+    assert naive == datetime(2026, 12, 31, tzinfo=UTC)
+    with pytest.raises(ValueError):
+        consultant_write_until_from_env({"KB_CONSULTANT_WRITE_UNTIL": "not-a-date"})
+
+
+def test_factory_wires_consultant_window_from_env():
+    service = build_settings_service_from_env(
+        InMemorySettingsStore(),
+        environ={"KB_CONSULTANT_WRITE_UNTIL": "2026-12-31T00:00:00Z"},
+        clock=_clock_at(datetime(2026, 6, 1, tzinfo=UTC)),
+    )
+
+    assert service.consultant_can_write() is True

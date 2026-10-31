@@ -434,3 +434,29 @@ FR-16-05（索引侧 GPU 资源隔离）不在代码层实现，属部署编排�
 **边界**：`expire` 执行真实 `DeleteObjects`，不是记账；若由桶生命周期负责
 介质删除，就不要把自动轮转指向 `s3_api`。manifest 布局是本项目的约定，
 备份任务必须按此写入；不声称兼容未提供的厂商私有布局。
+
+---
+
+## A-27 · 实施顾问限时写权限（FR-06-05）
+
+| | |
+| --- | --- |
+| 记录日期 | 2026-10-31 |
+| 状态 | ✅ 已实现（部署级时间窗，fail-closed） |
+| 影响设计文件 | 无 |
+
+**实现**：`BackupSettingsService` 新增 `consultant_write_until` 与可注入时钟。
+`implementation_consultant` 仅在 `now < consultant_write_until` 时保留写权限；
+到期或未配置时自动降级为**只读诊断**，`snapshot_for` / `describe_for` 仍可用。
+`build_settings_service_from_env` 从 `KB_CONSULTANT_WRITE_UNTIL`（ISO 8601）
+读取窗口。
+
+**触发条件与流程（交付方案口径）**
+1. POC 开始时由部署方显式设置 `KB_CONSULTANT_WRITE_UNTIL` 为约定的上线时间。
+2. **未配置 = 顾问只读**，不假设“还没上线所以可写”。
+3. 上线时间到达即自动降级，无需人工操作；不续期即保持只读。
+4. 配置值非法（非 ISO 8601）直接报错，拒绝启动管理面，不静默降级。
+5. 系统管理员写权限不受该时间窗影响。
+
+**边界**：这是部署级（单租户 PF-1）时间窗，不是租户级上线事件表；
+多租户/多阶段上线需要另建租户生命周期表（届时按 TD-01 §10 评估新表）。

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 
 from kb.api.admin_settings import create_admin_settings_app
 from kb.governance.settings_service import BackupSettingsService
@@ -153,3 +154,25 @@ async def test_missing_principal_is_401():
 
     assert status == 401
     assert payload["error"] == "missing_principal"
+
+
+async def test_consultant_is_forbidden_after_poc_window():
+    store = InMemorySettingsStore()
+    service = BackupSettingsService(
+        store,
+        consultant_write_until=datetime(2026, 1, 1, tzinfo=UTC),
+        clock=lambda: datetime(2026, 6, 1, tzinfo=UTC),
+    )
+    app = create_admin_settings_app(service)
+
+    status, payload = await _call(
+        app,
+        "PUT",
+        "/admin/settings/backup",
+        headers=_headers(**{"x-roles": "implementation_consultant"}),
+        body={"updates": {"rotation_days": 30}},
+    )
+
+    assert status == 403
+    assert payload["error"] == "forbidden"
+    assert await store.load("t1") == {}
