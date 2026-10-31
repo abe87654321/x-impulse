@@ -56,6 +56,14 @@ from kb.compliance.kms import (
     PostgresSubjectKeyStore,
     SubjectKeyStore,
 )
+from kb.compliance.kms_vault import (
+    KmsConfigError,
+    UrllibVaultTransport,
+    VaultTransitKmsClient,
+    VaultTransport,
+    VaultTransportError,
+    build_kms_from_env,
+)
 from kb.compliance.pii import DetectedPII, detect_pii, normalize_pii, subject_key
 from kb.compliance.restore import (
     RestoreCatalog,
@@ -86,6 +94,7 @@ __all__ = [
     "InMemoryBackupCatalog",
     "HoldInfo",
     "KmsClient",
+    "KmsConfigError",
     "KmsError",
     "KmsKeyDestroyedError",
     "KmsKeyManager",
@@ -108,7 +117,12 @@ __all__ = [
     "TenantIsolation",
     "TrackingBackupRotation",
     "UrllibHttpTransport",
+    "UrllibVaultTransport",
     "UnconfiguredBackupRotation",
+    "VaultTransitKmsClient",
+    "VaultTransport",
+    "VaultTransportError",
+    "build_kms_from_env",
     "detect_pii",
     "normalize_pii",
     "subject_key",
