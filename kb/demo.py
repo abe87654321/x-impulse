@@ -15,6 +15,7 @@ import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from kb.assembly import build_raw_store, build_subject_indexer_from_env
 from kb.database import Database
 from kb.generation.answer_service import AnswerService, HybridRetrievalAdapter
 from kb.generation.citations import Answer, Generator
@@ -26,7 +27,7 @@ from kb.generation.llm import (
 )
 from kb.identity.permissions import FULL_SCOPE, DelegationContext, Principal
 from kb.indexing.deletion import DocumentDeletionService
-from kb.indexing.embedding import HashingEmbedder, build_embedder_from_env
+from kb.indexing.embedding import Embedder, HashingEmbedder, build_embedder_from_env
 from kb.indexing.pipeline import IndexingPipeline
 from kb.indexing.store import PostgresDocumentStore
 from kb.indexing.suppression import PostgresSuppressionChecker
@@ -89,7 +90,7 @@ def _generator() -> Generator:
     return ExtractiveGenerator()
 
 
-def _embedder():
+def _embedder() -> Embedder:
     if os.environ.get("KB_EMBEDDER"):
         return build_embedder_from_env()
     return HashingEmbedder(dimension=64)
@@ -121,6 +122,8 @@ async def run_demo(
         chunking=ChunkingConfig(),
         suppression=_suppression_checker(),
         vector_indexer=VectorIndexer(embedder, vectors, collection=collection),
+        subject_indexer=build_subject_indexer_from_env(),
+        raw_store=build_raw_store(),
     )
     deletion = DocumentDeletionService(store, vectors, InMemoryQueryCache(), collection=collection)
     sync = SourceSyncService(

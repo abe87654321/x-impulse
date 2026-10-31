@@ -547,7 +547,8 @@ class SubjectErasureService:
         uncovered = "未覆盖位置：" + "；".join(f"{o.location_type}（{o.detail}）" for o in skipped)
         uncovered += (
             "；PII 召回上限受识别模型限制，另含兜底字面检索"
-            "；加密擦除使用软件 KEK，备份轮转尚未验证，生产须接 KMS"
+            "；加密擦除默认软件 KEK，生产须接 KMS（A-20）；"
+            "备份轮转为组件级验证（A-30），真实介质待客户环境验收"
         )
         method = (
             "主体标识归一化后 HMAC 精确匹配 subject_index；"

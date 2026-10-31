@@ -120,6 +120,10 @@ class RestrictionService:
             await conn.close()
         return None if row is None else _to_hold(row)
 
+    async def list_expired(self, now: datetime) -> list[HoldInfo]:
+        """供调度器 dry-run：只列出到期 hold，不释放也不删除。"""
+        return await self._expired(now)
+
     async def purge_expired(self, eraser: DocumentEraser, now: datetime) -> list[ErasureResult]:
         """保留期届满：释放 hold，然后执行 T-3 真删。"""
         holds = await self._expired(now)

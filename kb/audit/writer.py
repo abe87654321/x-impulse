@@ -128,8 +128,9 @@ def build_audit_store_from_env(
     """按环境配置装配审计存储；只配一半的加密参数视为配置错误。"""
     env = os.environ if environ is None else environ
     kek_raw = env.get("KB_KEK_BASE64")
-    pepper = env.get("KB_AUDIT_PII_PEPPER") or env.get("KB_SUPPRESSION_PEPPER")
-    if not kek_raw and not pepper:
+    audit_pepper = env.get("KB_AUDIT_PII_PEPPER")
+    pepper = audit_pepper or env.get("KB_SUPPRESSION_PEPPER")
+    if not kek_raw and not audit_pepper:
         return PostgresAuditStore(dsn)
     if not kek_raw or not pepper:
         raise AuditPayloadError("审计加密需同时配置 KB_KEK_BASE64 与 KB_AUDIT_PII_PEPPER")

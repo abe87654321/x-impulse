@@ -534,3 +534,62 @@ FR-16-05（索引侧 GPU 资源隔离）不在代码层实现，属部署编排�
 **边界**：这是组件级端到端验证，不等于客户环境验收。真实备份任务、
 桶策略、KMS/HSM 与凭据到位后，仍需按同一链路在隔离环境跑一次；
 在此之前不得对外声称“备份已加密擦除验证通过”。
+
+---
+
+## A-31 · 组合根：环境配置到运行服务的装配
+
+| | |
+| --- | --- |
+| 记录日期 | 2026-10-31 |
+| 状态 | ✅ 已实现 |
+| 影响设计文件 | 无 |
+
+**实现**：新增 `kb/assembly.py`，显式接收 `environ` 装配：
+- `build_subject_indexer_from_env`（pepper 缺失返回 None）
+- `build_key_manager_from_env`（仅 `KB_KMS_PROVIDER` 显式配置时启用）
+- `build_vector_store_from_env`（memory/qdrant）
+- `build_chat_service_from_env` / `build_app_from_env`
+- `build_document_erasure_service_from_env`（KMS 外的 raw/backup/restriction 一并接线）
+
+`kb/demo.py` 已改用组合根注入 `raw_store` 与 `subject_indexer`。
+同时修正 `build_audit_store_from_env`：只有 `KB_SUPPRESSION_PEPPER` 时不再
+报“审计加密只配一半”，而是返回普通审计存储（PII payload 仍 fail-closed 拒绝）。
+
+**边界**：组合根不读取导入时环境；未配置的能力保持 None/缺省，不静默降级。
+
+---
+
+## A-32 · T-3 保留期到期清除的调度入口
+
+| | |
+| --- | --- |
+| 记录日期 | 2026-10-31 |
+| 状态 | ✅ 已实现（CLI）；共享缓存仍待接入 |
+| 影响设计文件 | 无 |
+
+**实现**：`kb/retention.py` 提供 `--dry-run`（只列到期 hold）与执行模式，
+调用 `RestrictionService.purge_expired`，用组合根构建文档删除服务。
+进程内不 sleep 轮询；由外部 cron/K8s Job 调用。
+
+**边界**：缓存失效目前是 `InMemoryQueryCache`，只作用于当前进程；多副本
+部署必须注入共享缓存，否则其它副本可能继续命中旧 chunk（A-16 同级问题）。
+删除失败的请求以 `PARTIAL_FAILED` 退出码 1，供调度器告警。
+
+---
+
+## A-33 · S3 原文存储硬化：分片残留与 Object Lock
+
+| | |
+| --- | --- |
+| 记录日期 | 2026-10-31 |
+| 状态 | ✅ 已实现 |
+| 影响设计文件 | 无 |
+
+**实现**：`UrllibS3Transport.delete_prefix` 现在：
+1. 先检查桶 Object Lock；启用即拒绝删除（不假装成功）。
+2. 删除对象及所有版本（`ListObjectVersions` + 带 `VersionId` 的 DeleteObjects）。
+3. 列出并中止该前缀下未完成的 multipart upload。
+
+**边界**：分片中止按前缀匹配；若上传的 Key 尚未形成最终对象仍需运维确认。
+Object Lock 是合规保留，不能由删除链路绕过。

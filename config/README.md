@@ -102,3 +102,19 @@ KB_S3_SECRET_ACCESS_KEY=...
 
 不配置 `KB_RAW_OBJECT_STORE`（或设为 `none`）时删除证明的 `raw_object`
 保持 SKIPPED，不会假装已清理。
+
+## 保留期到期清除（T-3）
+
+由外部调度器调用，不要在应用进程内 sleep 轮询：
+
+```bash
+# 先看会删什么
+.venv/bin/python -m kb.retention --dry-run
+
+# 执行
+.venv/bin/python -m kb.retention
+```
+
+需要 `KB_SUPPRESSION_PEPPER`、数据库 DSN，以及 `KB_VECTOR_STORE`
+（`memory` 仅开发；生产用 `qdrant` + `KB_QDRANT_URL`）。
+删除失败时退出码为 1，供调度器告警。

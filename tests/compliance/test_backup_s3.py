@@ -14,6 +14,8 @@ from kb.compliance.backup_s3 import (
     S3BackupCatalog,
     S3NotFoundError,
     S3ObjectSummary,
+    _parse_object_lock,
+    _parse_uploads,
     _parse_versions,
     build_s3_transport_from_env,
     sign_v4_request,
@@ -209,3 +211,28 @@ def test_parse_versions_includes_delete_markers_and_pagination():
     assert truncated is True
     assert key_marker == "kb/t1/b1/data"
     assert version_marker == "v1"
+
+
+def test_parse_uploads_and_object_lock():
+    uploads_xml = b"""<ListMultipartUploadsResult>
+      <Upload><Key>kb/t1/doc/a</Key><UploadId>u1</UploadId></Upload>
+      <Upload><Key>kb/t1/doc/b</Key><UploadId>u2</UploadId></Upload>
+      <IsTruncated>true</IsTruncated>
+      <NextKeyMarker>kb/t1/doc/b</NextKeyMarker>
+      <NextUploadIdMarker>u2</NextUploadIdMarker>
+    </ListMultipartUploadsResult>"""
+
+    uploads, truncated, key_marker, upload_marker = _parse_uploads(uploads_xml)
+
+    assert uploads == [("kb/t1/doc/a", "u1"), ("kb/t1/doc/b", "u2")]
+    assert truncated is True
+    assert key_marker == "kb/t1/doc/b"
+    assert upload_marker == "u2"
+    assert _parse_object_lock(
+        b"<ObjectLockConfiguration><ObjectLockEnabled>Enabled</ObjectLockEnabled>"
+        b"</ObjectLockConfiguration>"
+    )
+    assert not _parse_object_lock(
+        b"<ObjectLockConfiguration><ObjectLockEnabled>Disabled</ObjectLockEnabled>"
+        b"</ObjectLockConfiguration>"
+    )

@@ -34,7 +34,11 @@ _EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
 
 
 class S3TransportError(BackupCatalogError):
-    """S3 调用失败。"""
+    """S3 调用失败。`status` 为 None 表示连接层失败。"""
+
+    def __init__(self, message: str, *, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 class S3NotFoundError(S3TransportError):
@@ -190,7 +194,9 @@ class UrllibS3Transport:
         )
 
     async def delete_prefix(self, bucket: str, prefix: str) -> int:
-        """删除前缀下所有对象，包含版本历史（S3 版本控制陷阱）。"""
+        """删除前缀下所有对象，包含版本历史与未完成分片上传。"""
+        if await self._object_lock_enabled(bucket):
+            raise S3TransportError("S3 桶开启 Object Lock，拒绝删除；需先解除合规保留")
         versions: list[tuple[str, str]] = []
         key_marker: str | None = None
         version_marker: str | None = None
@@ -223,7 +229,35 @@ class UrllibS3Transport:
         deleted = 0
         for start in range(0, len(keys), 1000):
             deleted += await self.delete_objects(bucket, keys[start : start + 1000])
-        return deleted
+        return deleted + await self._abort_incomplete_uploads(bucket, prefix)
+
+    async def _object_lock_enabled(self, bucket: str) -> bool:
+        try:
+            raw = await self._request("GET", bucket, "", query={"object-lock": ""})
+        except S3TransportError as exc:
+            if exc.status == 404:
+                return False
+            raise
+        return _parse_object_lock(raw)
+
+    async def _abort_incomplete_uploads(self, bucket: str, prefix: str) -> int:
+        uploads: list[tuple[str, str]] = []
+        key_marker: str | None = None
+        upload_marker: str | None = None
+        while True:
+            query: dict[str, str] = {"uploads": "", "prefix": prefix}
+            if key_marker:
+                query["key-marker"] = key_marker
+            if upload_marker:
+                query["upload-id-marker"] = upload_marker
+            raw = await self._request("GET", bucket, "", query=query)
+            page, truncated, key_marker, upload_marker = _parse_uploads(raw)
+            uploads.extend(page)
+            if not truncated:
+                break
+        for key, upload_id in uploads:
+            await self._request("DELETE", bucket, key, query={"uploadId": upload_id})
+        return len(uploads)
 
     async def _delete_versions(self, bucket: str, versions: Sequence[tuple[str, str]]) -> int:
         body = _delete_versions_xml(versions)
@@ -317,8 +351,10 @@ class UrllibS3Transport:
                 return bytes(response.read())
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
-                raise S3NotFoundError(f"S3 对象不存在：{bucket}/{key}") from exc
-            raise S3TransportError(f"S3 返回 HTTP {exc.code}：{exc.reason}") from exc
+                raise S3NotFoundError(f"S3 对象不存在：{bucket}/{key}", status=404) from exc
+            raise S3TransportError(
+                f"S3 返回 HTTP {exc.code}：{exc.reason}", status=exc.code
+            ) from exc
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise S3TransportError(f"S3 不可用：{exc}") from exc
 
@@ -500,6 +536,38 @@ def _delete_versions_xml(versions: Sequence[tuple[str, str]]) -> bytes:
         for key, version in versions
     )
     return f"<Delete><Quiet>false</Quiet>{objects}</Delete>".encode()
+
+
+def _parse_object_lock(raw: bytes) -> bool:
+    try:
+        root = ET.fromstring(raw)  # noqa: S314 - 响应来自部署层配置的 S3 端点
+    except ET.ParseError as exc:
+        raise S3TransportError("S3 Object Lock 响应不是合法 XML") from exc
+    return (_child_text(root, "ObjectLockEnabled") or "").lower() == "enabled"
+
+
+def _parse_uploads(
+    raw: bytes,
+) -> tuple[list[tuple[str, str]], bool, str | None, str | None]:
+    try:
+        root = ET.fromstring(raw)  # noqa: S314 - 响应来自部署层配置的 S3 端点
+    except ET.ParseError as exc:
+        raise S3TransportError("S3 分片上传列表响应不是合法 XML") from exc
+    uploads: list[tuple[str, str]] = []
+    for node in root:
+        if _local(node.tag) != "Upload":
+            continue
+        key = _child_text(node, "Key")
+        upload_id = _child_text(node, "UploadId")
+        if key is not None and upload_id is not None:
+            uploads.append((key, upload_id))
+    truncated = (_child_text(root, "IsTruncated") or "").lower() == "true"
+    return (
+        uploads,
+        truncated,
+        _child_text(root, "NextKeyMarker"),
+        _child_text(root, "NextUploadIdMarker"),
+    )
 
 
 def _parse_versions(

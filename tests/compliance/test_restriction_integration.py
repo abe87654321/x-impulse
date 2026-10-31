@@ -131,6 +131,9 @@ def test_active_hold_restricts_then_expiry_purges():
             == []
         )
 
+        expired = asyncio.run(restrictions.list_expired(now + timedelta(days=2)))
+        assert [hold.location_id for hold in expired] == [DOC]
+
         results = asyncio.run(restrictions.purge_expired(eraser, now + timedelta(days=2)))
         assert len(results) == 1
         assert results[0].state == "CLOSED"
