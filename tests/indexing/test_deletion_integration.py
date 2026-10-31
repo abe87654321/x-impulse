@@ -76,7 +76,7 @@ def test_deletion_propagates_to_db_vectors_and_cache():
         assert chunk_ids
 
         cache = InMemoryQueryCache()
-        cache.put("q", chunk_ids)
+        asyncio.run(cache.put(TENANT, "q", chunk_ids))
         service = DocumentDeletionService(store, vectors, cache, collection=COLLECTION)
         result = asyncio.run(service.delete_document(TENANT, doc_id))
 
@@ -85,6 +85,6 @@ def test_deletion_propagates_to_db_vectors_and_cache():
         assert db.fetch("SELECT 1 FROM documents WHERE doc_id = $1", doc_id) == []
         assert db.fetch("SELECT 1 FROM chunks WHERE doc_id = $1", doc_id) == []
         assert db.fetch("SELECT 1 FROM acl_entries WHERE object_id = $1", doc_id) == []
-        assert cache.get("q") is None
+        assert asyncio.run(cache.get(TENANT, "q")) is None
     finally:
         _cleanup()

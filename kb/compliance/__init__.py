@@ -33,6 +33,7 @@ from kb.compliance.backup_policy import (
     evaluate_backup_policy,
     resolve_backup_policy,
 )
+from kb.compliance.backup_runtime import PolicyBackupRotation
 from kb.compliance.backup_s3 import (
     S3BackupCatalog,
     S3NotFoundError,
@@ -108,6 +109,7 @@ __all__ = [
     "KmsKeyDestroyedError",
     "KmsKeyManager",
     "ManifestBackupCatalog",
+    "PolicyBackupRotation",
     "PostgresSubjectKeyStore",
     "RestoreCatalog",
     "RestoreFinding",

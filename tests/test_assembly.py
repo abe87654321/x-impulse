@@ -17,6 +17,7 @@ from kb.compliance.erasure import DocumentErasureService
 from kb.compliance.kms import KmsKeyManager
 from kb.compliance.subject_index import PostgresSubjectIndexer
 from kb.indexing.vector_store import InMemoryVectorStore, QdrantVectorStore
+from kb.retrieval.cache import InMemoryQueryCache, PostgresQueryCache, build_query_cache_from_env
 
 DSN = "postgresql://kb:dev@localhost/kb"
 
@@ -82,3 +83,13 @@ def test_document_erasure_service_requires_pepper():
         },
     )
     assert isinstance(service, DocumentErasureService)
+
+
+def test_query_cache_selection():
+    assert isinstance(build_query_cache_from_env(DSN, {}), InMemoryQueryCache)
+    assert isinstance(
+        build_query_cache_from_env(DSN, {"KB_QUERY_CACHE": "postgres"}),
+        PostgresQueryCache,
+    )
+    with pytest.raises(ValueError):
+        build_query_cache_from_env(DSN, {"KB_QUERY_CACHE": "unknown"})

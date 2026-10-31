@@ -48,7 +48,7 @@ schema-check: ## 验证建表数与 TD-01 一致
 	@COUNT=$$(psql postgresql://kb:dev@localhost/kb -tAc \
 		"SELECT count(*) FROM information_schema.tables WHERE table_schema='public'"); \
 	echo "建表数：$$COUNT"; \
-	test "$$COUNT" -eq 29 || { echo "表数不是 29，schema 与 TD-01 不一致"; exit 1; }
+	test "$$COUNT" -eq 31 || { echo "表数不是 31，schema 与 TD-01 不一致"; exit 1; }
 
 clean: ## 清缓存
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true

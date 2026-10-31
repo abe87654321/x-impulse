@@ -189,7 +189,7 @@ def test_subject_erasure_removes_chunks_and_redacts_texts():
         asyncio.run(indexer.index_location(TENANT, "eval_case", CASE, f"张三的电话{PHONE}?"))
 
         cache = InMemoryQueryCache()
-        cache.put("q", chunk_ids)
+        asyncio.run(cache.put(TENANT, "q", chunk_ids))
         key_manager = SoftwareKeyManager(kek_from_passphrase("test-kek"))
         asyncio.run(key_manager.register(TENANT, _key()))
         ciphertext = asyncio.run(key_manager.encrypt(TENANT, _key(), f"secret {PHONE}"))
@@ -225,7 +225,7 @@ def test_subject_erasure_removes_chunks_and_redacts_texts():
         with pytest.raises(KeyDestroyedError):
             asyncio.run(key_manager.decrypt(TENANT, _key(), ciphertext))
         assert db.fetch("SELECT 1 FROM chunks WHERE doc_id = $1", DOC) == []
-        assert cache.get("q") is None
+        assert asyncio.run(cache.get(TENANT, "q")) is None
         assert (
             db.fetch(
                 "SELECT 1 FROM subject_index WHERE tenant_id = $1 AND subject_key = $2",

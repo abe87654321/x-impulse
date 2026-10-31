@@ -118,3 +118,15 @@ KB_S3_SECRET_ACCESS_KEY=...
 需要 `KB_SUPPRESSION_PEPPER`、数据库 DSN，以及 `KB_VECTOR_STORE`
 （`memory` 仅开发；生产用 `qdrant` + `KB_QDRANT_URL`）。
 删除失败时退出码为 1，供调度器告警。
+
+## 共享检索缓存（多副本）
+
+默认 `KB_QUERY_CACHE=memory` 只适合单进程开发。多副本部署必须：
+
+```bash
+KB_QUERY_CACHE=postgres
+# 并确保已执行 migrations/0003_query_cache.sql（make migrate）
+```
+
+删除链路会通过 `query_cache_chunks` 反向映射按 chunk 定点失效；不配置共享
+缓存时，其它副本仍可能命中旧数据。

@@ -184,7 +184,7 @@ def test_document_erasure_covers_ten_locations_and_is_idempotent():
         _seed_related(chunk_ids[0])
 
         cache = InMemoryQueryCache()
-        cache.put("q", chunk_ids)
+        asyncio.run(cache.put(TENANT, "q", chunk_ids))
         raw_store = InMemoryRawObjectStore()
         raw_hash = "raw-hash"
         asyncio.run(raw_store.put(TENANT, DOC, raw_hash, b"original"))
@@ -218,7 +218,7 @@ def test_document_erasure_covers_ten_locations_and_is_idempotent():
         db = Database()
         assert db.fetch("SELECT 1 FROM documents WHERE doc_id = $1", DOC) == []
         assert db.fetch("SELECT 1 FROM chunks WHERE doc_id = $1", DOC) == []
-        assert cache.get("q") is None
+        assert asyncio.run(cache.get(TENANT, "q")) is None
         citation = db.fetch("SELECT chunk_id FROM citations WHERE citation_id = $1", CITATION)
         assert citation[0]["chunk_id"] is None
         qa = db.fetch("SELECT review_state FROM curated_qa WHERE qa_id = $1", QA)

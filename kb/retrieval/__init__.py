@@ -1,6 +1,12 @@
 """检索与重排 —— 召回阶段过滤、融合、缓存与二次校验。"""
 
-from kb.retrieval.cache import InMemoryQueryCache, make_cache_key
+from kb.retrieval.cache import (
+    InMemoryQueryCache,
+    PostgresQueryCache,
+    QueryCache,
+    build_query_cache_from_env,
+    make_cache_key,
+)
 from kb.retrieval.evaluation import (
     EvaluationCase,
     RerankDecision,
@@ -37,7 +43,6 @@ from kb.retrieval.retriever import (
     AclRepository,
     ChunkRepository,
     PermissionChecker,
-    QueryCache,
     RecallBackend,
     Retriever,
 )
@@ -53,10 +58,12 @@ __all__ = [
     "HybridRecallBackend",
     "HybridRetrievalService",
     "InMemoryQueryCache",
+    "PostgresQueryCache",
     "MetadataFilter",
     "PgChunkRepository",
     "PermissionChecker",
     "QueryCache",
+    "build_query_cache_from_env",
     "RerankConfigError",
     "RerankDecision",
     "Reranker",

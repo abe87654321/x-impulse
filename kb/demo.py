@@ -113,6 +113,8 @@ async def run_demo(
     store = PostgresDocumentStore()
     vectors = InMemoryVectorStore()
     embedder = _embedder()
+    raw_store = build_raw_store()
+    subject_indexer = build_subject_indexer_from_env()
 
     pipeline = IndexingPipeline(
         connector,
@@ -122,10 +124,17 @@ async def run_demo(
         chunking=ChunkingConfig(),
         suppression=_suppression_checker(),
         vector_indexer=VectorIndexer(embedder, vectors, collection=collection),
-        subject_indexer=build_subject_indexer_from_env(),
-        raw_store=build_raw_store(),
+        subject_indexer=subject_indexer,
+        raw_store=raw_store,
     )
-    deletion = DocumentDeletionService(store, vectors, InMemoryQueryCache(), collection=collection)
+    deletion = DocumentDeletionService(
+        store,
+        vectors,
+        InMemoryQueryCache(),
+        collection=collection,
+        raw_store=raw_store,
+        subject_indexer=subject_indexer,
+    )
     sync = SourceSyncService(
         connector,
         pipeline,

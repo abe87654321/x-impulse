@@ -13,6 +13,9 @@ from kb.api.app import ASGIApp, create_app
 from kb.api.chat_service import ChatService
 from kb.audit.writer import build_audit_store_from_env
 from kb.compliance.backup import BackupRotation, build_backup_rotation_from_env
+from kb.compliance.backup_adapters import CatalogDependencies, UrllibHttpTransport
+from kb.compliance.backup_runtime import PolicyBackupRotation
+from kb.compliance.backup_s3 import build_s3_transport_from_env
 from kb.compliance.crypto import KeyManager
 from kb.compliance.erasure import DocumentErasureService, PostgresErasureRepository
 from kb.compliance.kms import KmsKeyManager, PostgresSubjectKeyStore
@@ -22,6 +25,7 @@ from kb.compliance.restriction import RestrictionService
 from kb.compliance.subject_index import PostgresSubjectIndexer
 from kb.database import dsn_from_env
 from kb.generation.answer_service import AnswerService
+from kb.governance.settings_store import PostgresSettingsStore
 from kb.indexing.raw_store import RawObjectStore, build_raw_store_from_env
 from kb.indexing.store import PostgresDocumentStore
 from kb.indexing.vector_store import (
@@ -29,7 +33,7 @@ from kb.indexing.vector_store import (
     QdrantVectorStore,
     VectorStore,
 )
-from kb.retrieval.cache import InMemoryQueryCache
+from kb.retrieval.cache import build_query_cache_from_env
 
 
 def build_subject_indexer_from_env(
@@ -103,12 +107,42 @@ def build_document_erasure_service_from_env(
         PostgresErasureRepository(resolved_dsn),
         PostgresDocumentStore(resolved_dsn),
         build_vector_store_from_env(env),
-        InMemoryQueryCache(),
+        build_query_cache_from_env(resolved_dsn, env),
         scope_key_hasher=lambda value: subject_key(value, pepper),
         collection=env.get("KB_COLLECTION") or "kb_chunks",
         restrictions=RestrictionService(resolved_dsn),
-        backup=build_backup_rotation_from_env(env),
+        backup=build_backup_rotation_for_tenant(resolved_dsn, env),
         raw_store=build_raw_store_from_env(env),
+    )
+
+
+def build_catalog_dependencies_from_env(
+    environ: Mapping[str, str] | None = None,
+) -> CatalogDependencies:
+    """凭据只从部署环境装配；未配置的通道保持 None，由适配器显式报错。"""
+    env = os.environ if environ is None else environ
+    s3_transport = None
+    if env.get("KB_S3_ENDPOINT") and env.get("KB_S3_ACCESS_KEY_ID"):
+        s3_transport = build_s3_transport_from_env(env)
+    http_transport = None
+    base_url = env.get("KB_BACKUP_HTTP_BASE_URL", "").strip()
+    if base_url:
+        token = env.get("KB_BACKUP_HTTP_TOKEN", "").strip()
+        headers = {"Authorization": f"Bearer {token}"} if token else None
+        http_transport = UrllibHttpTransport(base_url, headers)
+    return CatalogDependencies(
+        http_transport=http_transport,
+        s3_transport=s3_transport,
+    )
+
+
+def build_backup_rotation_for_tenant(
+    dsn: str | None = None, environ: Mapping[str, str] | None = None
+) -> BackupRotation:
+    env = os.environ if environ is None else environ
+    return PolicyBackupRotation(
+        PostgresSettingsStore(dsn or dsn_from_env()),
+        build_catalog_dependencies_from_env(env),
     )
 
 
@@ -123,6 +157,8 @@ def build_backup_rotation(environ: Mapping[str, str] | None = None) -> BackupRot
 __all__ = [
     "build_app_from_env",
     "build_backup_rotation",
+    "build_backup_rotation_for_tenant",
+    "build_catalog_dependencies_from_env",
     "build_chat_service_from_env",
     "build_document_erasure_service_from_env",
     "build_key_manager_from_env",

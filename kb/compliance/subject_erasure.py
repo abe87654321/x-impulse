@@ -188,7 +188,7 @@ class SubjectErasureService:
 
         # cache → vector → chunk
         for chunk_id in chunk_ids:
-            self._cache.invalidate_chunk(chunk_id)
+            await self._cache.invalidate_chunk(tenant_id, chunk_id)
         outcomes.append(
             LocationOutcome(
                 "cache",

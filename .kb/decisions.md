@@ -593,3 +593,67 @@ FR-16-05（索引侧 GPU 资源隔离）不在代码层实现，属部署编排�
 
 **边界**：分片中止按前缀匹配；若上传的 Key 尚未形成最终对象仍需运维确认。
 Object Lock 是合规保留，不能由删除链路绕过。
+
+---
+
+## A-34 · T-2 源端删除补齐 raw_object 与 subject_index
+
+| | |
+| --- | --- |
+| 记录日期 | 2026-10-31 |
+| 状态 | ✅ 已实现 |
+| 影响设计文件 | 无 |
+
+**实现**：`DocumentDeletionService` 增加可选 `raw_store` 与 `subject_indexer`：
+删除 DB/向量/缓存后，按文档前缀删除原文对象，并按 chunk_id 清理
+`subject_index` 行。`DeletionResult` 增加两个计数（默认 0）。
+`kb/demo.py` 已注入两者。
+
+**边界**：清理发生在 DB 删除之后；raw 删除失败会让本次同步报失败，
+重试可安全重入（chunk 已空，raw 前缀删除仍会重试）。
+
+---
+
+## A-35 · 备份轮转按租户设置动态选择
+
+| | |
+| --- | --- |
+| 记录日期 | 2026-10-31 |
+| 状态 | ✅ 已实现 |
+| 影响设计文件 | 无 |
+
+**实现**：`kb/compliance/backup_runtime.py` 的 `PolicyBackupRotation` 每次
+调用读取 `service_settings`；只有显式配置了 `backup_system` 才构造目录轮转，
+否则保持 `UnconfiguredBackupRotation`。组合根新增
+`build_catalog_dependencies_from_env`（S3/HTTP 凭据只从部署环境注入）与
+`build_backup_rotation_for_tenant`，文档删除服务已改用后者。
+
+**边界**：推荐默认值不会被当成管理员已确认的备份接入；配置不完整时
+`resolve_backup_policy` 报错，删除证明记为 FAILED，不假装成功。
+
+---
+
+## A-36 · 共享检索缓存：Postgres 实现与两张新表
+
+| | |
+| --- | --- |
+| 记录日期 | 2026-10-31 |
+| 状态 | ✅ 已实现（迁移 0003） |
+| 影响设计文件 | 无（TD-01 §12 M-2：增量迁移，不改 schema.sql） |
+
+**实现**：`QueryCache` 接口改为 async 且显式带 `tenant_id`；
+`PostgresQueryCache` 用 `query_cache` + `query_cache_chunks` 两张表实现
+跨副本读写与 chunk→cache_key 反向映射。`KB_QUERY_CACHE=postgres` 启用，
+默认 `memory` 仅单进程开发。迁移 `migrations/0003_query_cache.sql` 已加入，
+`make schema-check` 表数更新为 31。
+
+**TD-01 §10 六问自检**
+1. 租户隔离：两表均 `tenant_id NOT NULL`。
+2. PII：只存问题哈希（含租户）与 chunk_id，无正文。
+3. 删除：无软删除列；失效即物理删除反向映射与空缓存行。
+4. 枚举：无原生 ENUM。
+5. ACL/受众：非知识内容，不适用。
+6. 索引：`(tenant_id, cache_key)` 主键 + `(tenant_id, chunk_id)` 反向索引。
+
+**边界**：缓存键本身含租户哈希；接口强制传 tenant_id，避免跨租户失效。
+Postgres 缓存不解决检索结果的权限分区问题（A-14 仍成立）。

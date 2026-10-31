@@ -214,7 +214,7 @@ async def test_chunk_point_invalidation_on_cache_hit():
     first = await r.retrieve(make_ctx(), "q", tenant_id="t1", k=5)
     assert {x.record.chunk_id for x in first} == {"c_1", "c_2"}
 
-    cache.invalidate_chunk("c_1")
+    await cache.invalidate_chunk("t1", "c_1")
     second = await r.retrieve(make_ctx(), "q", tenant_id="t1", k=5)
 
     assert backend.calls == 1  # 仍是缓存命中

@@ -20,7 +20,7 @@ from kb.identity.permissions import (
     build_chain,
     evaluate,
 )
-from kb.retrieval.cache import InMemoryQueryCache, make_cache_key
+from kb.retrieval.cache import InMemoryQueryCache, QueryCache, make_cache_key
 from kb.retrieval.fusion import fuse
 from kb.retrieval.models import (
     ChunkRecord,
@@ -55,14 +55,6 @@ class PermissionChecker(Protocol):
     async def is_allowed(
         self, ctx: DelegationContext, doc_id: str, memberships: frozenset[str]
     ) -> bool: ...
-
-
-class QueryCache(Protocol):
-    def get(self, key: str) -> tuple[str, ...] | None: ...
-
-    def put(self, key: str, chunk_ids: Sequence[str]) -> None: ...
-
-    def invalidate_chunk(self, chunk_id: str) -> None: ...
 
 
 class AclRepository(Protocol):
@@ -167,12 +159,12 @@ class Retriever:
             query=query,
             metadata_signature=flt.metadata.signature(),
         )
-        cached = self._cache.get(key)
+        cached = await self._cache.get(tenant_id, key)
         if cached is not None:
             candidates = await self._load_cached(cached, flt)
         else:
             candidates = await self._recall_and_fuse(query, flt, fetch_k)
-            self._cache.put(key, tuple(c.record.chunk_id for c in candidates))
+            await self._cache.put(tenant_id, key, tuple(c.record.chunk_id for c in candidates))
 
         approved = await self._revalidate(ctx, candidates, memberships, fetch_k)
         if cfg.rerank_enabled and self._reranker is not None and approved:

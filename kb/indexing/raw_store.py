@@ -8,13 +8,10 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
-from kb.compliance.backup_s3 import (
-    S3NotFoundError,
-    S3Transport,
-    build_s3_transport_from_env,
-)
+if TYPE_CHECKING:
+    from kb.compliance.backup_s3 import S3Transport
 
 
 class RawObjectStore(Protocol):
@@ -86,6 +83,8 @@ class S3RawObjectStore:
 
     async def get(self, tenant_id: str, doc_id: str, content_hash: str) -> bytes | None:
         key = f"{self._doc_prefix(tenant_id, doc_id)}{_validate_part(content_hash, 'content_hash')}"
+        from kb.compliance.backup_s3 import S3NotFoundError
+
         try:
             return await self._transport.get_object(self._bucket, key)
         except S3NotFoundError:
@@ -114,6 +113,8 @@ def build_raw_store_from_env(
         bucket = env.get("KB_RAW_OBJECT_BUCKET", "").strip()
         if not bucket:
             raise ValueError("KB_RAW_OBJECT_STORE=s3 时必须配置 KB_RAW_OBJECT_BUCKET")
+        from kb.compliance.backup_s3 import build_s3_transport_from_env
+
         return S3RawObjectStore(
             build_s3_transport_from_env(env),
             bucket=bucket,
